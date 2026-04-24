@@ -34,6 +34,36 @@ const isTaggedError = (
   "_tag" in error &&
   typeof (error as Record<string, unknown>)._tag === "string"
 
+const redactKeys = new Set([
+  "api_key",
+  "apikey",
+  "authorization",
+  "password",
+  "secret",
+  "token",
+  "x-api-key",
+])
+
+const sanitizeForDetails = (value: unknown): unknown => {
+  if (Array.isArray(value)) {
+    return value.map(sanitizeForDetails)
+  }
+
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, nestedValue]) => [
+        key,
+        redactKeys.has(key.toLowerCase()) ? "[redacted]" : sanitizeForDetails(nestedValue),
+      ]),
+    )
+  }
+
+  return value
+}
+
+const isRetryableStatus = (status: number) =>
+  status === 408 || status === 409 || status === 429 || status >= 500
+
 export const toErrorDetails = (error: unknown): ErrorEnvelope["error"] => {
   if (isTaggedError(error)) {
     switch (error._tag) {
@@ -41,7 +71,11 @@ export const toErrorDetails = (error: unknown): ErrorEnvelope["error"] => {
         return {
           type: error._tag,
           message: error.message,
-          details: { field: error.field as string },
+          details: {
+            field: error.field as string,
+            retryable: false,
+            hint: "Fix the configuration value and rerun the command.",
+          },
         }
       }
       case "MissingApiKeyError": {
@@ -51,6 +85,8 @@ export const toErrorDetails = (error: unknown): ErrorEnvelope["error"] => {
           details: {
             env_var: error.envVar as string,
             hint: error.hint as string,
+            next_step: `Set ${error.envVar as string} in the environment before retrying.`,
+            retryable: false,
           },
         }
       }
@@ -61,6 +97,8 @@ export const toErrorDetails = (error: unknown): ErrorEnvelope["error"] => {
           details: {
             source: error.source as string,
             reason: error.reason as string,
+            hint: "Provide a JSON object, JSON array, @file path, -, or @- input.",
+            retryable: false,
           },
         }
       }
@@ -68,7 +106,11 @@ export const toErrorDetails = (error: unknown): ErrorEnvelope["error"] => {
         return {
           type: error._tag,
           message: error.message,
-          details: { field: error.field as string },
+          details: {
+            field: error.field as string,
+            hint: "Correct the field value and rerun the command.",
+            retryable: false,
+          },
         }
       }
       case "ApiRequestError": {
@@ -79,18 +121,26 @@ export const toErrorDetails = (error: unknown): ErrorEnvelope["error"] => {
             method: error.method as string,
             path: error.path as string,
             reason: error.reason as string,
+            hint: "Check network connectivity, API base URL, and Exa service availability.",
+            retryable: true,
           },
         }
       }
       case "ApiResponseError": {
+        const status = error.status as number
+
         return {
           type: error._tag,
           message: error.message,
           details: {
             method: error.method as string,
             path: error.path as string,
-            status: error.status as number,
-            body: error.body,
+            status,
+            body: sanitizeForDetails(error.body),
+            hint: isRetryableStatus(status)
+              ? "Retry after the provider recovers or rate limits reset."
+              : "Inspect the request payload and provider error body.",
+            retryable: isRetryableStatus(status),
           },
         }
       }
@@ -101,6 +151,32 @@ export const toErrorDetails = (error: unknown): ErrorEnvelope["error"] => {
           details: {
             method: error.method as string,
             path: error.path as string,
+            hint: "The provider returned a response that does not match the expected JSON contract.",
+            retryable: true,
+          },
+        }
+      }
+      case "ArtifactWriteError": {
+        return {
+          type: error._tag,
+          message: error.message,
+          details: {
+            path: error.path as string,
+            hint: "Check that the artifact directory is writable or set EXA_CLI_ARTIFACT_DIR.",
+            retryable: false,
+          },
+        }
+      }
+      case "ResearchWaitTimeoutError": {
+        return {
+          type: error._tag,
+          message: error.message,
+          details: {
+            research_id: error.researchId as string,
+            timeout_ms: error.timeoutMs as number,
+            last_status: error.lastStatus,
+            hint: "Inspect the research task later or rerun wait with a larger timeoutMs.",
+            retryable: true,
           },
         }
       }

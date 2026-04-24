@@ -25,13 +25,25 @@ that can be used directly or wrapped by thin harness plugins later.
 ## Commands
 
 - `auth status`
+- `doctor`
+- `capabilities`
+- `schema list`
+- `schema show <command>`
+- `examples list`
+- `examples show <command-or-example-name>`
 - `web-search`
 - `code-context`
 - `crawl`
 - `company-research`
 - `linkedin-search`
 - `deep-research start`
+- `deep-research run`
 - `deep-research check`
+- `deep-research inspect`
+- `deep-research list`
+- `deep-research wait`
+- `deep-research events`
+- `deep-research stream`
 - `find-similar`
 
 ## Environment

@@ -1,7 +1,10 @@
 import { FileSystem } from "@effect/platform"
 import { describe, expect, it } from "@effect/vitest"
 import { Effect, Schema } from "effect"
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 
 import {
   ApiDecodeError,
@@ -102,6 +105,13 @@ const withTestServer = <A>(
     (server) => server.close,
   )
 
+const withTempDir = <A>(use: (path: string) => Effect.Effect<A>) =>
+  Effect.acquireUseRelease(
+    Effect.promise(() => mkdtemp(join(tmpdir(), "exa-cli-test-"))),
+    use,
+    (path) => Effect.promise(() => rm(path, { recursive: true, force: true })),
+  )
+
 describe("exa CLI", () => {
   it.effect("auth status reports missing API key without failing", () =>
     Effect.gen(function* () {
@@ -154,14 +164,24 @@ describe("exa CLI", () => {
           const payload = expectJson<{
             ok: boolean
             command: string
-            data: { context: string; data: { context: string } }
+            data: {
+              outcome: string
+              total: number
+              success_count: number
+              error_count: number
+              results: ReadonlyArray<{ ok: boolean; data: { context: string; data: { context: string } } }>
+            }
           }>(result.stdout)
 
           expect(result.exitCode).toBe(0)
           expect(result.stderr.trim()).toBe("")
           expect(payload.ok).toBe(true)
           expect(payload.command).toBe("web-search")
-          expect(payload.data.context).toBe("search context")
+          expect(payload.data.outcome).toBe("succeeded")
+          expect(payload.data.total).toBe(1)
+          expect(payload.data.success_count).toBe(1)
+          expect(payload.data.error_count).toBe(0)
+          expect(payload.data.results[0]?.data.context).toBe("search context")
           expect(server.requests).toHaveLength(1)
           expect(server.requests[0]?.method).toBe("POST")
           expect(server.requests[0]?.path).toBe("/search")
@@ -194,15 +214,19 @@ describe("exa CLI", () => {
       const payload = expectJson<{
         ok: boolean
         command: string
-        error: { type: string; details?: { field?: string } }
-      }>(result.stderr)
+        data: {
+          error_count: number
+          results: ReadonlyArray<{ ok: boolean; error: { type: string; details?: { field?: string } } }>
+        }
+      }>(result.stdout)
 
       expect(result.exitCode).toBe(1)
-      expect(result.stdout.trim()).toBe("")
-      expect(payload.ok).toBe(false)
+      expect(result.stderr.trim()).toBe("")
+      expect(payload.ok).toBe(true)
       expect(payload.command).toBe("code-context")
-      expect(payload.error.type).toBe("CommandInputError")
-      expect(payload.error.details?.field).toBe("tokensNum")
+      expect(payload.data.error_count).toBe(1)
+      expect(payload.data.results[0]?.error.type).toBe("CommandInputError")
+      expect(payload.data.results[0]?.error.details?.field).toBe("tokensNum")
     }),
   )
 
@@ -235,7 +259,7 @@ describe("exa CLI", () => {
           expect(payload.command).toBe("crawl")
           expect(server.requests[0]?.path).toBe("/contents")
           expect(server.requests[0]?.body).toMatchObject({
-            ids: ["https://example.com"],
+            urls: ["https://example.com"],
             contents: {
               text: { maxCharacters: 1200 },
               livecrawl: "preferred",
@@ -305,12 +329,12 @@ describe("exa CLI", () => {
         const body = await readRequestBody(request)
         record(body)
         if (request.method === "POST") {
-          writeJson(response, 200, { id: "task_123" })
+          writeJson(response, 201, { researchId: "task_123", status: "running" })
           return
         }
 
         writeJson(response, 200, {
-          id: "task_123",
+          researchId: "task_123",
           status: "completed",
           data: { report: "done" },
         })
@@ -325,7 +349,7 @@ describe("exa CLI", () => {
             },
           )
           const check = yield* runCli(
-            ["deep-research", "check", '{"taskId":"task_123"}'],
+            ["deep-research", "check", '{"researchId":"task_123"}'],
             {
               EXA_API_KEY: "test-key",
               EXA_API_BASE_URL: server.baseUrl,
@@ -335,14 +359,13 @@ describe("exa CLI", () => {
           expect(start.exitCode).toBe(0)
           expect(check.exitCode).toBe(0)
           expect(server.requests[0]?.method).toBe("POST")
-          expect(server.requests[0]?.path).toBe("/research/v0/tasks")
+          expect(server.requests[0]?.path).toBe("/research/v1")
           expect(server.requests[0]?.body).toMatchObject({
             model: "exa-research",
             instructions: "Research Effect",
-            output: { inferSchema: false },
           })
           expect(server.requests[1]?.method).toBe("GET")
-          expect(server.requests[1]?.path).toBe("/research/v0/tasks/task_123")
+          expect(server.requests[1]?.path).toBe("/research/v1/task_123")
         }),
     ),
   )
@@ -373,6 +396,330 @@ describe("exa CLI", () => {
           })
         }),
     ),
+  )
+
+  it.effect("web-search preserves ordered batch results and exits 1 on partial API failure", () =>
+    withTestServer(
+      async (request, response, record) => {
+        const body = await readRequestBody(request)
+        record(body)
+
+        if (
+          body &&
+          typeof body === "object" &&
+          "query" in body &&
+          body.query === "rate limited"
+        ) {
+          writeJson(response, 429, { error: { message: "Too many requests" } })
+          return
+        }
+
+        writeJson(response, 200, {
+          context: "ok context",
+          results: [{ id: "ok", url: "https://example.com/ok" }],
+        })
+      },
+      (server) =>
+        Effect.gen(function* () {
+          const result = yield* runCli(
+            [
+              "web-search",
+              "--concurrency",
+              "2",
+              '[{"query":"ok"},{"query":"rate limited"}]',
+            ],
+            {
+              EXA_API_KEY: "test-key",
+              EXA_API_BASE_URL: server.baseUrl,
+            },
+          )
+
+          const payload = expectJson<{
+            ok: boolean
+            data: {
+              outcome: string
+              total: number
+              success_count: number
+              error_count: number
+              concurrency: number
+              results: ReadonlyArray<{
+                index: number
+                target?: { query?: string }
+                ok: boolean
+                error?: { type: string; details?: { status?: number; retryable?: boolean } }
+              }>
+            }
+          }>(result.stdout)
+
+          expect(result.exitCode).toBe(1)
+          expect(result.stderr.trim()).toBe("")
+          expect(payload.ok).toBe(true)
+          expect(payload.data.outcome).toBe("partial_failure")
+          expect(payload.data.total).toBe(2)
+          expect(payload.data.success_count).toBe(1)
+          expect(payload.data.error_count).toBe(1)
+          expect(payload.data.concurrency).toBe(2)
+          expect(payload.data.results.map((item) => item.index)).toEqual([0, 1])
+          expect(payload.data.results[0]?.ok).toBe(true)
+          expect(payload.data.results[1]?.target?.query).toBe("rate limited")
+          expect(payload.data.results[1]?.error?.type).toBe("ApiResponseError")
+          expect(payload.data.results[1]?.error?.details?.status).toBe(429)
+          expect(payload.data.results[1]?.error?.details?.retryable).toBe(true)
+          expect(server.requests).toHaveLength(2)
+        }),
+    ),
+  )
+
+  it.effect("artifact output writes large crawl results to an artifact", () =>
+    withTempDir((artifactDir) =>
+      withTestServer(
+        async (request, response, record) => {
+          const body = await readRequestBody(request)
+          record(body)
+          writeJson(response, 200, {
+            results: [{ id: "https://example.com", text: "page text".repeat(500) }],
+          })
+        },
+        (server) =>
+          Effect.gen(function* () {
+            const result = yield* runCli(
+              ["crawl", "--output", "artifact", '{"url":"https://example.com"}'],
+              {
+                EXA_API_KEY: "test-key",
+                EXA_API_BASE_URL: server.baseUrl,
+                EXA_CLI_ARTIFACT_DIR: artifactDir,
+              },
+            )
+
+            const payload = expectJson<{
+              data: {
+                results: ReadonlyArray<{
+                  ok: boolean
+                  data: {
+                    kind: string
+                    artifact: { absolute_path: string; size_bytes: number }
+                  }
+                }>
+              }
+            }>(result.stdout)
+            const artifact = payload.data.results[0]?.data.artifact
+
+            expect(result.exitCode).toBe(0)
+            expect(payload.data.results[0]?.data.kind).toBe("summary+artifact")
+            expect(artifact?.absolute_path.startsWith(artifactDir)).toBe(true)
+            expect(artifact?.size_bytes).toBeGreaterThan(0)
+
+            const artifactText = yield* Effect.promise(() => readFile(artifact?.absolute_path ?? "", "utf8"))
+            expect(artifactText).toContain("page text")
+          }),
+      ),
+    ),
+  )
+
+  it.effect("find-similar accepts @file JSON input", () =>
+    withTempDir((tempDir) =>
+      withTestServer(
+        async (request, response, record) => {
+          const body = await readRequestBody(request)
+          record(body)
+          writeJson(response, 200, { results: [] })
+        },
+        (server) =>
+          Effect.gen(function* () {
+            const inputPath = join(tempDir, "find-similar.json")
+            yield* Effect.promise(() =>
+              writeFile(inputPath, JSON.stringify({ url: "https://example.com/from-file" })),
+            )
+
+            const result = yield* runCli(["find-similar", `@${inputPath}`], {
+              EXA_API_KEY: "test-key",
+              EXA_API_BASE_URL: server.baseUrl,
+            })
+
+            expect(result.exitCode).toBe(0)
+            expect(server.requests[0]?.path).toBe("/findSimilar")
+            expect(server.requests[0]?.body).toMatchObject({
+              url: "https://example.com/from-file",
+            })
+          }),
+      ),
+    ),
+  )
+
+  it.effect("deep-research exposes lifecycle aliases, wait, events, list, and stream", () =>
+    withTestServer(
+      async (request, response, record) => {
+        const body = await readRequestBody(request)
+        record(body)
+
+        if (request.method === "POST") {
+          writeJson(response, 201, { researchId: "task_123", status: "running" })
+          return
+        }
+
+        if (request.url === "/research/v1?limit=2") {
+          writeJson(response, 200, {
+            data: [{ researchId: "task_123", status: "running" }],
+            hasMore: false,
+            nextCursor: null,
+          })
+          return
+        }
+
+        if (request.url === "/research/v1/task_123?events=true") {
+          writeJson(response, 200, {
+            researchId: "task_123",
+            status: "completed",
+            events: [{ type: "research.completed" }],
+          })
+          return
+        }
+
+        if (request.url === "/research/v1/task_123?stream=true") {
+          response.writeHead(200, { "content-type": "text/event-stream" })
+          response.end('event: update\ndata: {"status":"running"}\n\nevent: done\ndata: {"status":"completed"}\n\n')
+          return
+        }
+
+        writeJson(response, 200, {
+          researchId: "task_123",
+          status: "completed",
+          data: { report: "done" },
+        })
+      },
+      (server) =>
+        Effect.gen(function* () {
+          const run = yield* runCli(
+            ["deep-research", "run", '{"instructions":"Research Effect"}'],
+            {
+              EXA_API_KEY: "test-key",
+              EXA_API_BASE_URL: server.baseUrl,
+            },
+          )
+          const inspect = yield* runCli(
+            ["deep-research", "inspect", '{"researchId":"task_123"}'],
+            {
+              EXA_API_KEY: "test-key",
+              EXA_API_BASE_URL: server.baseUrl,
+            },
+          )
+          const list = yield* runCli(["deep-research", "list", '{"limit":2}'], {
+            EXA_API_KEY: "test-key",
+            EXA_API_BASE_URL: server.baseUrl,
+          })
+          const wait = yield* runCli(
+            [
+              "deep-research",
+              "wait",
+              '{"researchId":"task_123","intervalMs":1,"timeoutMs":500}',
+            ],
+            {
+              EXA_API_KEY: "test-key",
+              EXA_API_BASE_URL: server.baseUrl,
+            },
+          )
+          const events = yield* runCli(
+            ["deep-research", "events", '{"researchId":"task_123"}'],
+            {
+              EXA_API_KEY: "test-key",
+              EXA_API_BASE_URL: server.baseUrl,
+            },
+          )
+          const stream = yield* runCli(
+            ["deep-research", "stream", '{"researchId":"task_123"}'],
+            {
+              EXA_API_KEY: "test-key",
+              EXA_API_BASE_URL: server.baseUrl,
+            },
+          )
+
+          const waitPayload = expectJson<{ data: { status: string } }>(wait.stdout)
+          const streamPayload = expectJson<{ data: { event_count: number } }>(stream.stdout)
+
+          expect(run.exitCode).toBe(0)
+          expect(inspect.exitCode).toBe(0)
+          expect(list.exitCode).toBe(0)
+          expect(wait.exitCode).toBe(0)
+          expect(events.exitCode).toBe(0)
+          expect(stream.exitCode).toBe(0)
+          expect(waitPayload.data.status).toBe("completed")
+          expect(streamPayload.data.event_count).toBe(2)
+          expect(server.requests.map((request) => request.path)).toEqual(
+            expect.arrayContaining([
+              "/research/v1",
+              "/research/v1/task_123",
+              "/research/v1?limit=2",
+              "/research/v1/task_123?events=true",
+              "/research/v1/task_123?stream=true",
+            ]),
+          )
+        }),
+    ),
+  )
+
+  it.effect("discovery commands expose doctor, capabilities, schemas, and examples", () =>
+    Effect.gen(function* () {
+      const doctor = yield* runCli(["doctor"], {
+        EXA_API_KEY: undefined,
+        EXA_API_BASE_URL: undefined,
+      })
+      const capabilities = yield* runCli(["capabilities"], {
+        EXA_API_KEY: undefined,
+        EXA_API_BASE_URL: undefined,
+      })
+      const schema = yield* runCli(["schema", "show", "web-search"], {
+        EXA_API_KEY: undefined,
+        EXA_API_BASE_URL: undefined,
+      })
+      const examples = yield* runCli(["examples", "show", "batch-search"], {
+        EXA_API_KEY: undefined,
+        EXA_API_BASE_URL: undefined,
+      })
+
+      const doctorPayload = expectJson<{ data: { checks: ReadonlyArray<{ name: string; ok: boolean }> } }>(
+        doctor.stdout,
+      )
+      const capabilitiesPayload = expectJson<{
+        data: { deep_research: { lifecycle: ReadonlyArray<{ action: string; supported: boolean }> } }
+      }>(capabilities.stdout)
+      const schemaPayload = expectJson<{ data: { command: string; batch: boolean; schema: unknown } }>(
+        schema.stdout,
+      )
+      const examplesPayload = expectJson<{ data: { examples: ReadonlyArray<{ name: string }> } }>(
+        examples.stdout,
+      )
+
+      expect(doctor.exitCode).toBe(0)
+      expect(capabilities.exitCode).toBe(0)
+      expect(schema.exitCode).toBe(0)
+      expect(examples.exitCode).toBe(0)
+      expect(doctorPayload.data.checks).toContainEqual(
+        expect.objectContaining({ name: "api_key", ok: false }),
+      )
+      expect(capabilitiesPayload.data.deep_research.lifecycle).toContainEqual(
+        expect.objectContaining({ action: "cancel", supported: false }),
+      )
+      expect(schemaPayload.data.command).toBe("web-search")
+      expect(schemaPayload.data.batch).toBe(true)
+      expect(schemaPayload.data.schema).toBeTruthy()
+      expect(examplesPayload.data.examples[0]?.name).toBe("batch-search")
+    }),
+  )
+
+  it.effect("--help lists the expanded command surface", () =>
+    Effect.gen(function* () {
+      const result = yield* runCli(["--help"], {
+        EXA_API_KEY: undefined,
+        EXA_API_BASE_URL: undefined,
+      })
+
+      expect(result.exitCode).toBe(0)
+      expect(result.stdout).toContain("doctor")
+      expect(result.stdout).toContain("capabilities")
+      expect(result.stdout).toContain("schema")
+      expect(result.stdout).toContain("examples")
+      expect(result.stdout).toContain("deep-research wait")
+    }),
   )
 
   it.effect("returns structured error for invalid JSON input", () =>
@@ -411,7 +758,7 @@ describe("toErrorDetails", () => {
       const details = toErrorDetails(error)
       expect(details.type).toBe("ConfigurationError")
       expect(details.message).toBe("Invalid URL")
-      expect(details.details).toEqual({ field: "EXA_API_BASE_URL" })
+      expect(details.details).toMatchObject({ field: "EXA_API_BASE_URL", retryable: false })
     }),
   )
 
@@ -424,9 +771,10 @@ describe("toErrorDetails", () => {
       const details = toErrorDetails(error)
       expect(details.type).toBe("MissingApiKeyError")
       expect(details.message).toBe("EXA_API_KEY is not configured")
-      expect(details.details).toEqual({
+      expect(details.details).toMatchObject({
         env_var: "EXA_API_KEY",
         hint: "Set your API key",
+        retryable: false,
       })
     }),
   )
@@ -440,9 +788,10 @@ describe("toErrorDetails", () => {
       })
       const details = toErrorDetails(error)
       expect(details.type).toBe("JsonInputError")
-      expect(details.details).toEqual({
+      expect(details.details).toMatchObject({
         source: "inline",
         reason: "InvalidJson",
+        retryable: false,
       })
     }),
   )
@@ -455,7 +804,7 @@ describe("toErrorDetails", () => {
       })
       const details = toErrorDetails(error)
       expect(details.type).toBe("CommandInputError")
-      expect(details.details).toEqual({ field: "name" })
+      expect(details.details).toMatchObject({ field: "name", retryable: false })
     }),
   )
 
@@ -469,10 +818,11 @@ describe("toErrorDetails", () => {
       })
       const details = toErrorDetails(error)
       expect(details.type).toBe("ApiRequestError")
-      expect(details.details).toEqual({
+      expect(details.details).toMatchObject({
         method: "POST",
         path: "/search",
         reason: "ConnectionRefused",
+        retryable: true,
       })
     }),
   )
@@ -488,11 +838,12 @@ describe("toErrorDetails", () => {
       })
       const details = toErrorDetails(error)
       expect(details.type).toBe("ApiResponseError")
-      expect(details.details).toEqual({
+      expect(details.details).toMatchObject({
         method: "POST",
         path: "/search",
         status: 422,
         body: { errors: ["invalid"] },
+        retryable: false,
       })
     }),
   )
@@ -501,14 +852,15 @@ describe("toErrorDetails", () => {
     Effect.gen(function* () {
       const error = new ApiDecodeError({
         method: "GET",
-        path: "/research/v0/tasks/task_123",
+        path: "/research/v1/task_123",
         message: "Unexpected end of JSON input",
       })
       const details = toErrorDetails(error)
       expect(details.type).toBe("ApiDecodeError")
-      expect(details.details).toEqual({
+      expect(details.details).toMatchObject({
         method: "GET",
-        path: "/research/v0/tasks/task_123",
+        path: "/research/v1/task_123",
+        retryable: true,
       })
     }),
   )

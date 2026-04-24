@@ -63,6 +63,24 @@ export class ApiDecodeError extends Schema.TaggedError<ApiDecodeError>()(
   },
 ) {}
 
+export class ArtifactWriteError extends Schema.TaggedError<ArtifactWriteError>()(
+  "ArtifactWriteError",
+  {
+    path: Schema.String,
+    message: Schema.String,
+  },
+) {}
+
+export class ResearchWaitTimeoutError extends Schema.TaggedError<ResearchWaitTimeoutError>()(
+  "ResearchWaitTimeoutError",
+  {
+    researchId: Schema.String,
+    timeoutMs: Schema.Number,
+    lastStatus: Schema.NullishOr(Schema.String),
+    message: Schema.String,
+  },
+) {}
+
 export type AppError =
   | ConfigurationError
   | MissingApiKeyError
@@ -71,3 +89,5 @@ export type AppError =
   | ApiRequestError
   | ApiResponseError
   | ApiDecodeError
+  | ArtifactWriteError
+  | ResearchWaitTimeoutError

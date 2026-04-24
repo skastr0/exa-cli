@@ -2,10 +2,13 @@
 
 A JSON-first Effect CLI for Exa provider operations.
 
-## Commands
+## Protocol
 
 Every operation accepts one JSON input argument. Inputs can be inline JSON, `@file`,
-or `-` for stdin. Every command returns a deterministic JSON envelope:
+`-`, or `@-` for stdin. Prefer `@file` payloads in scripts so payloads stay
+reviewable and repeatable.
+
+Every command returns a deterministic JSON envelope:
 
 ```json
 {
@@ -32,22 +35,132 @@ Failures are emitted to stderr as:
 Available commands:
 
 - `auth status`
+- `doctor`
+- `capabilities`
+- `schema list`
+- `schema show <command>`
+- `examples list`
+- `examples show <command-or-example-name>`
 - `web-search`
 - `code-context`
 - `crawl`
 - `company-research`
 - `linkedin-search`
 - `deep-research start`
+- `deep-research run`
 - `deep-research check`
+- `deep-research inspect`
+- `deep-research list`
+- `deep-research wait`
+- `deep-research events`
+- `deep-research stream`
 - `find-similar`
+
+## Batch Commands
+
+The fan-out commands accept either one object or an array of objects:
+
+- `web-search`
+- `code-context`
+- `crawl`
+- `company-research`
+- `linkedin-search`
+- `find-similar`
+
+Batch output preserves input order and includes `outcome`, counts,
+`concurrency`, per-item `target`, and per-item success/error records. If any item
+fails, the command exits with code `1` while still writing the itemized batch
+envelope to stdout.
+
+Use `--concurrency <n>` to control bounded parallelism.
+
+## Large Output
+
+Search, crawl, and research commands support:
+
+```bash
+--output inline
+--output artifact
+--output auto
+```
+
+`artifact` always writes the command result JSON to disk and returns a compact
+summary plus an artifact record. `auto` writes an artifact when the result is
+large. Set `EXA_CLI_ARTIFACT_DIR` to control the artifact directory; otherwise
+artifacts are written under `.exa-cli/artifacts`.
+
+## Deep Research
+
+Deep research uses Exa's asynchronous research API:
+
+- `deep-research start @payload.json`
+- `deep-research run @payload.json`
+- `deep-research check @payload.json`
+- `deep-research inspect @payload.json`
+- `deep-research list @payload.json`
+- `deep-research wait @payload.json`
+- `deep-research events @payload.json`
+- `deep-research stream @payload.json`
+
+`run` is an alias for `start`; `inspect` is an alias for `check`. `wait` polls
+until `completed`, `canceled`, or `failed`. `events` fetches the provider event
+log, and `stream` collects provider SSE events into a JSON envelope.
+
+The provider does not document a research-task cancel endpoint. `capabilities`
+reports cancel as unsupported.
+
+## Discovery
+
+Agents can discover the contract without scraping this README:
+
+```bash
+bun run dev doctor
+bun run dev capabilities
+bun run dev schema list
+bun run dev schema show web-search
+bun run dev examples list
+bun run dev examples show batch-search
+```
 
 ## Examples
 
+Create payload files:
+
 ```bash
-bun run dev web-search '{"query":"Effect Schema","numResults":5}'
-bun run dev code-context '{"query":"React useState examples","tokensNum":5000}'
-bun run dev crawl '{"url":"https://example.com","maxCharacters":3000}'
-bun run dev deep-research start '{"instructions":"Research the Exa API"}'
+mkdir -p payloads
+
+cat > payloads/web-search.json <<'JSON'
+{"query":"Effect Schema","numResults":5}
+JSON
+
+cat > payloads/web-search-batch.json <<'JSON'
+[
+  {"query":"Effect Schema"},
+  {"query":"Effect CLI"}
+]
+JSON
+
+cat > payloads/crawl.json <<'JSON'
+{"url":"https://example.com","maxCharacters":3000}
+JSON
+
+cat > payloads/deep-research-start.json <<'JSON'
+{"instructions":"Research the Exa API"}
+JSON
+
+cat > payloads/deep-research-wait.json <<'JSON'
+{"researchId":"01jszdfs0052sg4jc552sg4jc5","intervalMs":2000,"timeoutMs":180000}
+JSON
+```
+
+Run commands:
+
+```bash
+bun run dev web-search @payloads/web-search.json
+bun run dev web-search --concurrency 2 @payloads/web-search-batch.json
+bun run dev crawl --output artifact @payloads/crawl.json
+bun run dev deep-research start @payloads/deep-research-start.json
+bun run dev deep-research wait @payloads/deep-research-wait.json
 ```
 
 ## Environment

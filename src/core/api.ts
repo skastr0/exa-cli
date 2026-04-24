@@ -28,6 +28,8 @@ interface RequestSpec<A, I, R> {
   readonly responseSchema: Schema.Schema<A, I, R>
 }
 
+type TextRequestSpec = Omit<RequestSpec<unknown, unknown, never>, "responseSchema">
+
 const baseClient = Effect.gen(function* () {
   const client = yield* HttpClient.HttpClient
   const config = yield* loadAppConfig()
@@ -157,6 +159,52 @@ export const requestJson = <A, I, R>(spec: RequestSpec<A, I, R>) =>
           }),
       ),
     )
+  })
+
+export const requestText = (spec: TextRequestSpec) =>
+  Effect.gen(function* () {
+    const client = yield* baseClient
+    const request = buildRequest(spec)
+
+    const response = yield* client.execute(request).pipe(
+      Effect.mapError(
+        (error) =>
+          new ApiRequestError({
+            method: spec.method,
+            path: spec.path,
+            reason: error._tag === "RequestError" ? error.reason : error._tag,
+            message: error.message,
+          }),
+      ),
+    )
+
+    const responseText = yield* response.text.pipe(
+      Effect.mapError(
+        (error) =>
+          new ApiRequestError({
+            method: spec.method,
+            path: spec.path,
+            reason: error.reason,
+            message: error.message,
+          }),
+      ),
+    )
+
+    if (response.status < 200 || response.status >= 300) {
+      const body = yield* parseResponseBody(responseText)
+
+      return yield* Effect.fail(
+        new ApiResponseError({
+          method: spec.method,
+          path: spec.path,
+          status: response.status,
+          message: extractApiMessage(response.status, body),
+          body,
+        }),
+      )
+    }
+
+    return responseText
   })
 
 export const getAuthStatus = Effect.gen(function* () {

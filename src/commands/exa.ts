@@ -1,9 +1,11 @@
-import { Args, Command } from "@effect/cli"
+import { Args, Command, Options } from "@effect/cli"
 import { HttpClient } from "@effect/platform"
 import { Effect, Schema } from "effect"
 
-import { requestJson } from "../core/api"
-import { CommandInputError, JsonInputError } from "../core/errors"
+import { applyOutputPolicy, type OutputMode } from "../core/artifacts"
+import { executeBatchJsonCommand, runBatchJsonCommand } from "../core/batch"
+import { requestJson, requestText } from "../core/api"
+import { CommandInputError, JsonInputError, ResearchWaitTimeoutError } from "../core/errors"
 import { loadJsonInput } from "../core/json"
 import { executeJsonCommand } from "../core/output"
 
@@ -12,9 +14,22 @@ const DEFAULT_MAX_CHARACTERS = 2000
 const DEFAULT_CONTEXT_MAX_CHARACTERS = 10000
 const DEFAULT_CODE_TOKENS = 5000
 const DEFAULT_SIMILAR_RESULTS = 10
+export const DEFAULT_BATCH_CONCURRENCY = 5
+const DEFAULT_WAIT_INTERVAL_MS = 2000
+const DEFAULT_WAIT_TIMEOUT_MS = 180_000
 
 const jsonInputArg = Args.text({ name: "input" }).pipe(
   Args.withDescription("JSON object, @file path, raw JSON string, or - for stdin"),
+)
+
+const outputModeOption = Options.choice("output", ["inline", "artifact", "auto"] as const).pipe(
+  Options.withDefault("inline" as const),
+  Options.withDescription("Output policy for large results"),
+)
+
+const concurrencyOption = Options.integer("concurrency").pipe(
+  Options.withDefault(DEFAULT_BATCH_CONCURRENCY),
+  Options.withDescription("Maximum number of batch items to run at once"),
 )
 
 const UnknownRecord = Schema.Record({
@@ -76,11 +91,26 @@ export const LinkedinSearchInputSchema = Schema.Struct({
 
 export const DeepResearchStartInputSchema = Schema.Struct({
   instructions: Schema.String,
-  model: Schema.optional(Schema.Literal("exa-research", "exa-research-pro")),
+  model: Schema.optional(Schema.Literal("exa-research-fast", "exa-research", "exa-research-pro")),
+  outputSchema: Schema.optional(UnknownRecord),
 })
 
 export const DeepResearchCheckInputSchema = Schema.Struct({
-  taskId: Schema.String,
+  researchId: Schema.optional(Schema.String),
+  taskId: Schema.optional(Schema.String),
+})
+
+export const DeepResearchListInputSchema = Schema.Struct({
+  cursor: Schema.optional(Schema.String),
+  limit: Schema.optional(Schema.Number),
+})
+
+export const DeepResearchWaitInputSchema = Schema.Struct({
+  researchId: Schema.optional(Schema.String),
+  taskId: Schema.optional(Schema.String),
+  intervalMs: Schema.optional(Schema.Number),
+  timeoutMs: Schema.optional(Schema.Number),
+  events: Schema.optional(Schema.Boolean),
 })
 
 export const FindSimilarInputSchema = Schema.Struct({
@@ -99,7 +129,164 @@ type CompanyResearchInput = typeof CompanyResearchInputSchema.Type
 type LinkedinSearchInput = typeof LinkedinSearchInputSchema.Type
 type DeepResearchStartInput = typeof DeepResearchStartInputSchema.Type
 type DeepResearchCheckInput = typeof DeepResearchCheckInputSchema.Type
+type DeepResearchListInput = typeof DeepResearchListInputSchema.Type
+type DeepResearchWaitInput = typeof DeepResearchWaitInputSchema.Type
 type FindSimilarInput = typeof FindSimilarInputSchema.Type
+
+export interface ExaCommandContract {
+  readonly command: string
+  readonly description: string
+  readonly schema: Schema.Schema.AnyNoContext
+  readonly batch: boolean
+  readonly outputModes: ReadonlyArray<OutputMode>
+  readonly examples: ReadonlyArray<{
+    readonly name: string
+    readonly input: unknown
+  }>
+  readonly domainRules?: ReadonlyArray<string>
+  readonly lifecycle?: boolean
+}
+
+const outputModes = ["inline", "artifact", "auto"] as const
+
+export const exaCommandContracts: ReadonlyArray<ExaCommandContract> = [
+  {
+    command: "web-search",
+    description: "Search the web with Exa.",
+    schema: WebSearchInputSchema,
+    batch: true,
+    outputModes,
+    examples: [
+      { name: "single-search", input: { query: "Effect Schema", numResults: 5 } },
+      {
+        name: "batch-search",
+        input: [{ query: "Effect Schema" }, { query: "Effect CLI" }],
+      },
+    ],
+  },
+  {
+    command: "code-context",
+    description: "Fetch Exa code context.",
+    schema: CodeContextInputSchema,
+    batch: true,
+    outputModes,
+    examples: [{ name: "react-hooks", input: { query: "React useState examples", tokensNum: 5000 } }],
+  },
+  {
+    command: "crawl",
+    description: "Fetch page contents for a URL.",
+    schema: CrawlInputSchema,
+    batch: true,
+    outputModes,
+    examples: [{ name: "crawl-page", input: { url: "https://example.com", maxCharacters: 3000 } }],
+  },
+  {
+    command: "company-research",
+    description: "Search company-focused sources.",
+    schema: CompanyResearchInputSchema,
+    batch: true,
+    outputModes,
+    examples: [{ name: "company", input: { companyName: "Acme", numResults: 5 } }],
+  },
+  {
+    command: "linkedin-search",
+    description: "Search LinkedIn profiles or companies.",
+    schema: LinkedinSearchInputSchema,
+    batch: true,
+    outputModes,
+    examples: [{ name: "profiles", input: { query: "Jane Doe", searchType: "profiles" } }],
+  },
+  {
+    command: "find-similar",
+    description: "Find pages similar to a URL.",
+    schema: FindSimilarInputSchema,
+    batch: true,
+    outputModes,
+    examples: [{ name: "similar", input: { url: "https://example.com/article" } }],
+  },
+  {
+    command: "deep-research start",
+    description: "Start an asynchronous Exa research task.",
+    schema: DeepResearchStartInputSchema,
+    batch: false,
+    outputModes,
+    lifecycle: true,
+    examples: [{ name: "start", input: { instructions: "Research the Exa API" } }],
+  },
+  {
+    command: "deep-research run",
+    description: "Alias for starting an asynchronous Exa research task.",
+    schema: DeepResearchStartInputSchema,
+    batch: false,
+    outputModes,
+    lifecycle: true,
+    examples: [{ name: "run", input: { instructions: "Research the Exa API" } }],
+  },
+  {
+    command: "deep-research check",
+    description: "Inspect a research task by id.",
+    schema: DeepResearchCheckInputSchema,
+    batch: false,
+    outputModes,
+    lifecycle: true,
+    domainRules: ["Provide either researchId or taskId."],
+    examples: [{ name: "check", input: { researchId: "01jszdfs0052sg4jc552sg4jc5" } }],
+  },
+  {
+    command: "deep-research inspect",
+    description: "Alias for inspecting a research task by id.",
+    schema: DeepResearchCheckInputSchema,
+    batch: false,
+    outputModes,
+    lifecycle: true,
+    domainRules: ["Provide either researchId or taskId."],
+    examples: [{ name: "inspect", input: { researchId: "01jszdfs0052sg4jc552sg4jc5" } }],
+  },
+  {
+    command: "deep-research list",
+    description: "List research tasks.",
+    schema: DeepResearchListInputSchema,
+    batch: false,
+    outputModes,
+    lifecycle: true,
+    examples: [{ name: "list", input: { limit: 10 } }],
+  },
+  {
+    command: "deep-research wait",
+    description: "Poll a research task until it reaches a terminal status.",
+    schema: DeepResearchWaitInputSchema,
+    batch: false,
+    outputModes,
+    lifecycle: true,
+    domainRules: ["Provide either researchId or taskId."],
+    examples: [
+      {
+        name: "wait",
+        input: { researchId: "01jszdfs0052sg4jc552sg4jc5", intervalMs: 2000, timeoutMs: 180000 },
+      },
+    ],
+  },
+  {
+    command: "deep-research events",
+    description: "Fetch research event log data.",
+    schema: DeepResearchCheckInputSchema,
+    batch: false,
+    outputModes,
+    lifecycle: true,
+    domainRules: ["Provide either researchId or taskId."],
+    examples: [{ name: "events", input: { researchId: "01jszdfs0052sg4jc552sg4jc5" } }],
+  },
+  {
+    command: "deep-research stream",
+    description: "Collect provider SSE updates for a research task.",
+    schema: DeepResearchCheckInputSchema,
+    batch: false,
+    outputModes,
+    lifecycle: true,
+    domainRules: ["Provide either researchId or taskId."],
+    examples: [{ name: "stream", input: { researchId: "01jszdfs0052sg4jc552sg4jc5" } }],
+  },
+]
 
 const asTextArray = (value: string | ReadonlyArray<string> | undefined) =>
   typeof value === "string" ? [value] : value
@@ -120,6 +307,16 @@ const validatePositiveInteger = (field: string, value: number | undefined) =>
         new CommandInputError({
           field,
           message: `${field} must be a positive integer`,
+        }),
+      )
+    : Effect.void
+
+const validatePositiveNumber = (field: string, value: number | undefined) =>
+  value !== undefined && value <= 0
+    ? Effect.fail(
+        new CommandInputError({
+          field,
+          message: `${field} must be positive`,
         }),
       )
     : Effect.void
@@ -146,6 +343,83 @@ const loadCommandInput = <A, I, R>(schema: Schema.Schema<A, I, R>, input: string
         : error,
     ),
   )
+
+const appendQuery = (path: string, params: Record<string, string | number | boolean | undefined>) => {
+  const searchParams = new URLSearchParams()
+
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== undefined) {
+      searchParams.set(key, String(value))
+    }
+  }
+
+  const query = searchParams.toString()
+  return query.length > 0 ? `${path}?${query}` : path
+}
+
+const resolveResearchId = (input: {
+  readonly researchId?: string | undefined
+  readonly taskId?: string | undefined
+}) =>
+  Effect.gen(function* () {
+    const researchId =
+      input.researchId && input.researchId.trim().length > 0 ? input.researchId : input.taskId
+
+    if (!researchId || researchId.trim().length === 0) {
+      return yield* Effect.fail(
+        new CommandInputError({
+          field: "researchId",
+          message: "researchId or taskId must not be empty",
+        }),
+      )
+    }
+
+    return researchId
+  })
+
+const extractStatus = (data: unknown) =>
+  data && typeof data === "object" && "status" in data && typeof data.status === "string"
+    ? data.status
+    : undefined
+
+const isTerminalResearchStatus = (status: string | undefined) =>
+  status === "completed" || status === "canceled" || status === "failed"
+
+const parseSse = (text: string) =>
+  text
+    .split(/\n\s*\n/g)
+    .map((chunk) => {
+      const event: Record<string, unknown> = {}
+      const dataLines: string[] = []
+
+      for (const line of chunk.split(/\r?\n/g)) {
+        if (line.startsWith("event:")) {
+          event.event = line.slice("event:".length).trim()
+        } else if (line.startsWith("id:")) {
+          event.id = line.slice("id:".length).trim()
+        } else if (line.startsWith("retry:")) {
+          event.retry = Number(line.slice("retry:".length).trim())
+        } else if (line.startsWith("data:")) {
+          dataLines.push(line.slice("data:".length).trim())
+        }
+      }
+
+      if (dataLines.length === 0 && Object.keys(event).length === 0) {
+        return undefined
+      }
+
+      const dataText = dataLines.join("\n")
+      if (dataText.length > 0) {
+        try {
+          event.data = JSON.parse(dataText) as unknown
+        } catch {
+          event.data = dataText
+        }
+      }
+
+      return event
+    })
+    .filter((event): event is Record<string, unknown> => event !== undefined)
 
 const webSearch = (input: WebSearchInput) =>
   Effect.gen(function* () {
@@ -233,7 +507,7 @@ const crawl = (input: CrawlInput) =>
       path: "/contents",
       integration: "exa-cli-crawling",
       body: {
-        ids: [input.url],
+        urls: [input.url],
         contents: {
           text: { maxCharacters: input.maxCharacters ?? DEFAULT_MAX_CHARACTERS },
           livecrawl: "preferred",
@@ -313,18 +587,19 @@ const deepResearchStart = (input: DeepResearchStartInput) =>
     const model = input.model ?? "exa-research"
     const data = yield* requestJson({
       method: "POST",
-      path: "/research/v0/tasks",
+      path: "/research/v1",
       integration: "exa-cli-deep-research",
       body: {
         model,
         instructions: input.instructions,
-        output: { inferSchema: false },
+        ...(input.outputSchema ? { outputSchema: input.outputSchema } : {}),
       },
       responseSchema: UnknownRecord,
     })
 
     return {
-      taskId: data && typeof data === "object" && "id" in data ? data.id : undefined,
+      researchId:
+        data && typeof data === "object" && "researchId" in data ? data.researchId : undefined,
       model,
       instructions: input.instructions,
       data,
@@ -333,14 +608,105 @@ const deepResearchStart = (input: DeepResearchStartInput) =>
 
 const deepResearchCheck = (input: DeepResearchCheckInput) =>
   Effect.gen(function* () {
-    yield* validateNonEmpty("taskId", input.taskId)
+    const researchId = yield* resolveResearchId(input)
 
     return yield* requestJson({
       method: "GET",
-      path: `/research/v0/tasks/${encodeURIComponent(input.taskId)}`,
+      path: `/research/v1/${encodeURIComponent(researchId)}`,
       integration: "exa-cli-deep-research",
       responseSchema: UnknownRecord,
     })
+  })
+
+const deepResearchList = (input: DeepResearchListInput) =>
+  Effect.gen(function* () {
+    yield* validatePositiveInteger("limit", input.limit)
+
+    return yield* requestJson({
+      method: "GET",
+      path: appendQuery("/research/v1", {
+        cursor: input.cursor,
+        limit: input.limit,
+      }),
+      integration: "exa-cli-deep-research",
+      responseSchema: UnknownRecord,
+    })
+  })
+
+const deepResearchEvents = (input: DeepResearchCheckInput) =>
+  Effect.gen(function* () {
+    const researchId = yield* resolveResearchId(input)
+
+    return yield* requestJson({
+      method: "GET",
+      path: appendQuery(`/research/v1/${encodeURIComponent(researchId)}`, { events: true }),
+      integration: "exa-cli-deep-research",
+      responseSchema: UnknownRecord,
+    })
+  })
+
+const deepResearchStream = (input: DeepResearchCheckInput) =>
+  Effect.gen(function* () {
+    const researchId = yield* resolveResearchId(input)
+    const text = yield* requestText({
+      method: "GET",
+      path: appendQuery(`/research/v1/${encodeURIComponent(researchId)}`, { stream: true }),
+      integration: "exa-cli-deep-research",
+    })
+    const events = parseSse(text)
+
+    return {
+      researchId,
+      event_count: events.length,
+      events,
+      ...(events.length === 0 && text.trim().length > 0 ? { raw: text } : {}),
+    }
+  })
+
+const deepResearchWait = (input: DeepResearchWaitInput) =>
+  Effect.gen(function* () {
+    const researchId = yield* resolveResearchId(input)
+    yield* validatePositiveInteger("intervalMs", input.intervalMs)
+    yield* validatePositiveInteger("timeoutMs", input.timeoutMs)
+    yield* validatePositiveNumber("timeoutMs", input.timeoutMs)
+
+    const intervalMs = input.intervalMs ?? DEFAULT_WAIT_INTERVAL_MS
+    const timeoutMs = input.timeoutMs ?? DEFAULT_WAIT_TIMEOUT_MS
+    const startedAt = Date.now()
+    let latest: unknown
+    let lastStatus: string | undefined
+
+    while (Date.now() - startedAt <= timeoutMs) {
+      latest = yield* requestJson({
+        method: "GET",
+        path: appendQuery(`/research/v1/${encodeURIComponent(researchId)}`, {
+          events: input.events ? true : undefined,
+        }),
+        integration: "exa-cli-deep-research",
+        responseSchema: UnknownRecord,
+      })
+      lastStatus = extractStatus(latest)
+
+      if (isTerminalResearchStatus(lastStatus)) {
+        return {
+          researchId,
+          status: lastStatus,
+          elapsed_ms: Date.now() - startedAt,
+          data: latest,
+        }
+      }
+
+      yield* Effect.sleep(intervalMs)
+    }
+
+    return yield* Effect.fail(
+      new ResearchWaitTimeoutError({
+        researchId,
+        timeoutMs,
+        lastStatus,
+        message: `Timed out waiting for research task ${researchId}`,
+      }),
+    )
   })
 
 const findSimilar = (input: FindSimilarInput) =>
@@ -373,20 +739,62 @@ const makeJsonCommand = <A, I, R>(options: {
   readonly schema: Schema.Schema<A, I, R>
   readonly run: (input: A) => Effect.Effect<unknown, unknown, HttpClient.HttpClient>
 }) =>
-  Command.make(options.name, { input: jsonInputArg }, ({ input }) =>
+  Command.make(options.name, { input: jsonInputArg, output: outputModeOption }, ({ input, output }) =>
     executeJsonCommand(
       options.commandName,
-      loadCommandInput(options.schema, input).pipe(Effect.flatMap(options.run)),
+      loadCommandInput(options.schema, input).pipe(
+        Effect.flatMap(options.run),
+        Effect.flatMap((data) =>
+          applyOutputPolicy({
+            command: options.commandName,
+            mode: output as OutputMode,
+            data,
+          }),
+        ),
+      ),
     ),
   ).pipe(Command.withDescription(options.description))
 
+const makeBatchJsonCommand = <A, I, R>(options: {
+  readonly name: string
+  readonly commandName: string
+  readonly description: string
+  readonly schema: Schema.Schema<A, I, R>
+  readonly targetFields: ReadonlyArray<string>
+  readonly run: (input: A) => Effect.Effect<unknown, unknown, HttpClient.HttpClient>
+}) =>
+  Command.make(
+    options.name,
+    { input: jsonInputArg, output: outputModeOption, concurrency: concurrencyOption },
+    ({ input, output, concurrency }) =>
+      executeBatchJsonCommand(
+        options.commandName,
+        runBatchJsonCommand({
+          command: options.commandName,
+          input,
+          schema: options.schema,
+          concurrency,
+          outputMode: output as OutputMode,
+          targetFields: options.targetFields,
+          run: options.run,
+        }),
+      ),
+  ).pipe(Command.withDescription(options.description))
+
 const deepResearchCommand = Command.make("deep-research").pipe(
-  Command.withDescription("Start and check Exa deep research tasks"),
+  Command.withDescription("Manage Exa deep research tasks"),
   Command.withSubcommands([
     makeJsonCommand({
       name: "start",
       commandName: "deep-research start",
       description: "Start a deep research task from JSON input",
+      schema: DeepResearchStartInputSchema,
+      run: deepResearchStart,
+    }),
+    makeJsonCommand({
+      name: "run",
+      commandName: "deep-research run",
+      description: "Alias for starting a deep research task from JSON input",
       schema: DeepResearchStartInputSchema,
       run: deepResearchStart,
     }),
@@ -397,51 +805,92 @@ const deepResearchCommand = Command.make("deep-research").pipe(
       schema: DeepResearchCheckInputSchema,
       run: deepResearchCheck,
     }),
+    makeJsonCommand({
+      name: "inspect",
+      commandName: "deep-research inspect",
+      description: "Alias for checking a deep research task from JSON input",
+      schema: DeepResearchCheckInputSchema,
+      run: deepResearchCheck,
+    }),
+    makeJsonCommand({
+      name: "list",
+      commandName: "deep-research list",
+      description: "List deep research tasks from JSON input",
+      schema: DeepResearchListInputSchema,
+      run: deepResearchList,
+    }),
+    makeJsonCommand({
+      name: "wait",
+      commandName: "deep-research wait",
+      description: "Wait for a deep research task to reach a terminal status",
+      schema: DeepResearchWaitInputSchema,
+      run: deepResearchWait,
+    }),
+    makeJsonCommand({
+      name: "events",
+      commandName: "deep-research events",
+      description: "Fetch the detailed event log for a deep research task",
+      schema: DeepResearchCheckInputSchema,
+      run: deepResearchEvents,
+    }),
+    makeJsonCommand({
+      name: "stream",
+      commandName: "deep-research stream",
+      description: "Collect provider SSE events for a deep research task",
+      schema: DeepResearchCheckInputSchema,
+      run: deepResearchStream,
+    }),
   ]),
 )
 
 export const exaCommands = [
-  makeJsonCommand({
+  makeBatchJsonCommand({
     name: "web-search",
     commandName: "web-search",
     description: "Search the web with Exa from JSON input",
     schema: WebSearchInputSchema,
+    targetFields: ["query"],
     run: webSearch,
   }),
-  makeJsonCommand({
+  makeBatchJsonCommand({
     name: "code-context",
     commandName: "code-context",
     description: "Fetch Exa code context from JSON input",
     schema: CodeContextInputSchema,
+    targetFields: ["query"],
     run: codeContext,
   }),
-  makeJsonCommand({
+  makeBatchJsonCommand({
     name: "crawl",
     commandName: "crawl",
     description: "Crawl a URL with Exa contents API from JSON input",
     schema: CrawlInputSchema,
+    targetFields: ["url"],
     run: crawl,
   }),
-  makeJsonCommand({
+  makeBatchJsonCommand({
     name: "company-research",
     commandName: "company-research",
     description: "Research a company with Exa from JSON input",
     schema: CompanyResearchInputSchema,
+    targetFields: ["companyName"],
     run: companyResearch,
   }),
-  makeJsonCommand({
+  makeBatchJsonCommand({
     name: "linkedin-search",
     commandName: "linkedin-search",
     description: "Search LinkedIn with Exa from JSON input",
     schema: LinkedinSearchInputSchema,
+    targetFields: ["query"],
     run: linkedinSearch,
   }),
   deepResearchCommand,
-  makeJsonCommand({
+  makeBatchJsonCommand({
     name: "find-similar",
     commandName: "find-similar",
     description: "Find pages similar to a URL from JSON input",
     schema: FindSimilarInputSchema,
+    targetFields: ["url"],
     run: findSimilar,
   }),
 ]

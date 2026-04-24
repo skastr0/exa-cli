@@ -6,6 +6,7 @@ import { BunContext, BunRuntime } from "@effect/platform-bun"
 import { Effect, Layer } from "effect"
 
 import { authCommand } from "./commands/auth"
+import { discoveryCommands } from "./commands/discovery"
 import { exaCommands } from "./commands/exa"
 import { CLI_NAME, CLI_VERSION } from "./core/constants"
 import { writeCauseEnvelope, writeFailureEnvelope, setExitCode } from "./core/output"
@@ -15,6 +16,7 @@ export const rootCommand = Command.make(CLI_NAME).pipe(
   Command.withDescription("JSON-first Exa provider CLI powered by Effect"),
   Command.withSubcommands([
     authCommand,
+    ...discoveryCommands,
     ...exaCommands,
   ]),
 )
