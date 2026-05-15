@@ -1,5 +1,8 @@
 export const CLI_NAME = "exa"
 export const CLI_VERSION = "0.1.0"
+export const CLI_DATA_DIR_NAME = "exa-cli"
+export const CLI_HOME_ENV = "EXA_CLI_HOME"
+export const ARTIFACT_DIR_ENV = "EXA_CLI_ARTIFACT_DIR"
 export const API_BASE_URL_ENV = "EXA_API_BASE_URL"
 export const API_KEY_ENV = "EXA_API_KEY"
 export const API_KEY_HINT = "Export EXA_API_KEY from your Exa API settings."

@@ -3,7 +3,7 @@ import { describe, expect, it } from "@effect/vitest"
 import { Effect, Schema } from "effect"
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http"
-import { tmpdir } from "node:os"
+import { homedir, tmpdir } from "node:os"
 import { join } from "node:path"
 
 import {
@@ -133,6 +133,44 @@ describe("exa CLI", () => {
       expect(payload.data.configured).toBe(false)
       expect(payload.data.authenticated).toBe(false)
       expect(payload.data.api_base_url).toBe("https://api.exa.ai")
+    }),
+  )
+
+  it.effect("doctor reports default CLI runtime data outside the project tree", () =>
+    Effect.gen(function* () {
+      const result = yield* runCli(["doctor"], {
+        EXA_API_KEY: undefined,
+        EXA_API_BASE_URL: undefined,
+        EXA_CLI_HOME: undefined,
+        EXA_CLI_ARTIFACT_DIR: undefined,
+      })
+
+      const payload = expectJson<{
+        ok: boolean
+        data: {
+          environment: {
+            cli_home: string
+            artifact_dir: string
+          }
+          capabilities: {
+            runtime_data: {
+              default_home: string
+              cwd_default: boolean
+              project_output_requires_explicit_path: boolean
+            }
+          }
+        }
+      }>(result.stdout)
+
+      const expectedHome = join(homedir(), ".config", "exa-cli")
+
+      expect(result.exitCode).toBe(0)
+      expect(payload.ok).toBe(true)
+      expect(payload.data.environment.cli_home).toBe(expectedHome)
+      expect(payload.data.environment.artifact_dir).toBe(join(expectedHome, "artifacts"))
+      expect(payload.data.capabilities.runtime_data.default_home).toBe("~/.config/exa-cli")
+      expect(payload.data.capabilities.runtime_data.cwd_default).toBe(false)
+      expect(payload.data.capabilities.runtime_data.project_output_requires_explicit_path).toBe(true)
     }),
   )
 
@@ -511,6 +549,48 @@ describe("exa CLI", () => {
 
             const artifactText = yield* Effect.promise(() => readFile(artifact?.absolute_path ?? "", "utf8"))
             expect(artifactText).toContain("page text")
+          }),
+      ),
+    ),
+  )
+
+  it.effect("artifact output defaults under EXA_CLI_HOME", () =>
+    withTempDir((cliHome) =>
+      withTestServer(
+        async (request, response, record) => {
+          const body = await readRequestBody(request)
+          record(body)
+          writeJson(response, 200, {
+            results: [{ id: "https://example.com", text: "page text".repeat(500) }],
+          })
+        },
+        (server) =>
+          Effect.gen(function* () {
+            const result = yield* runCli(
+              ["crawl", "--output", "artifact", '{"url":"https://example.com"}'],
+              {
+                EXA_API_KEY: "test-key",
+                EXA_API_BASE_URL: server.baseUrl,
+                EXA_CLI_HOME: cliHome,
+                EXA_CLI_ARTIFACT_DIR: undefined,
+              },
+            )
+
+            const payload = expectJson<{
+              data: {
+                results: ReadonlyArray<{
+                  ok: boolean
+                  data: {
+                    kind: string
+                    artifact: { absolute_path: string }
+                  }
+                }>
+              }
+            }>(result.stdout)
+            const artifact = payload.data.results[0]?.data.artifact
+
+            expect(result.exitCode).toBe(0)
+            expect(artifact?.absolute_path.startsWith(join(cliHome, "artifacts"))).toBe(true)
           }),
       ),
     ),

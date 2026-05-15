@@ -28,7 +28,7 @@ const cli = Command.run(rootCommand, {
 
 const runtimeLayer = Layer.mergeAll(BunContext.layer, AppLayer)
 
-export const runCli = (args: ReadonlyArray<string>) =>
+export const runCli = (args: ReadonlyArray<string>): Effect.Effect<void> =>
   Effect.suspend(() => cli(args)).pipe(
     Effect.catchAll((error) =>
       setExitCode(1).pipe(Effect.zipRight(writeFailureEnvelope(undefined, error))),

@@ -1,14 +1,14 @@
 import { mkdir } from "node:fs/promises"
-import { join, resolve } from "node:path"
+import { join } from "node:path"
 import { Effect, Schema } from "effect"
 
 import { ArtifactWriteError } from "./errors"
+import { getArtifactDirectory } from "./runtime"
 
 export const OutputModeSchema = Schema.Literal("inline", "artifact", "auto")
 export type OutputMode = typeof OutputModeSchema.Type
 
 const AUTO_ARTIFACT_THRESHOLD_BYTES = 16_000
-const ARTIFACT_DIR_ENV = "EXA_CLI_ARTIFACT_DIR"
 
 export interface ArtifactRecord {
   readonly key: string
@@ -48,9 +48,6 @@ const summarizeData = (data: unknown, sizeBytes: number) => {
 
   return `Wrote ${sizeBytes} bytes to an artifact.`
 }
-
-export const getArtifactDirectory = () =>
-  resolve(Bun.env[ARTIFACT_DIR_ENV] ?? join(process.cwd(), ".exa-cli", "artifacts"))
 
 export const applyOutputPolicy = (options: {
   readonly command: string

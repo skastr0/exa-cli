@@ -1,6 +1,8 @@
 import * as Cause from "effect/Cause"
 import { Effect } from "effect"
 
+import { ARTIFACT_DIR_ENV, CLI_HOME_ENV } from "./constants"
+
 interface SuccessEnvelope {
   readonly ok: true
   readonly command: string
@@ -162,7 +164,7 @@ export const toErrorDetails = (error: unknown): ErrorEnvelope["error"] => {
           message: error.message,
           details: {
             path: error.path as string,
-            hint: "Check that the artifact directory is writable or set EXA_CLI_ARTIFACT_DIR.",
+            hint: `Check that the artifact directory is writable or set ${CLI_HOME_ENV} or ${ARTIFACT_DIR_ENV}.`,
             retryable: false,
           },
         }

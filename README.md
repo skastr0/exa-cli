@@ -86,8 +86,12 @@ Search, crawl, and research commands support:
 
 `artifact` always writes the command result JSON to disk and returns a compact
 summary plus an artifact record. `auto` writes an artifact when the result is
-large. Set `EXA_CLI_ARTIFACT_DIR` to control the artifact directory; otherwise
-artifacts are written under `.exa-cli/artifacts`.
+large. By default, CLI-owned artifacts are written under
+`~/.config/exa-cli/artifacts`, never under the current project directory.
+
+Set `EXA_CLI_HOME` to relocate all CLI-local runtime data. Set
+`EXA_CLI_ARTIFACT_DIR` only when you explicitly want artifacts in a specific
+directory, including a project directory.
 
 ## Deep Research
 
@@ -169,6 +173,8 @@ bun run dev deep-research wait @payloads/deep-research-wait.json
 |----------|----------|---------|-------------|
 | `EXA_API_KEY` | Yes | - | Exa API key |
 | `EXA_API_BASE_URL` | No | `https://api.exa.ai` | Exa API base URL |
+| `EXA_CLI_HOME` | No | `~/.config/exa-cli` | CLI-local runtime data root |
+| `EXA_CLI_ARTIFACT_DIR` | No | `$EXA_CLI_HOME/artifacts` | Explicit artifact output directory |
 
 ## Development
 
