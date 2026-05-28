@@ -5,7 +5,7 @@ import {
 } from "@effect/platform"
 import { Effect, Schema } from "effect"
 
-import { loadAppConfig, requireApiKey } from "./config"
+import { loadAppConfig, requireCredential } from "./config"
 import { USER_AGENT } from "./constants"
 import { ApiDecodeError, ApiRequestError, ApiResponseError } from "./errors"
 import { decodeUnknownJsonText } from "./json"
@@ -33,7 +33,7 @@ type TextRequestSpec = Omit<RequestSpec<unknown, unknown, never>, "responseSchem
 const baseClient = Effect.gen(function* () {
   const client = yield* HttpClient.HttpClient
   const config = yield* loadAppConfig()
-  const apiKey = yield* requireApiKey()
+  const credential = yield* requireCredential()
 
   return client.pipe(
     HttpClient.mapRequest((request) =>
@@ -41,7 +41,7 @@ const baseClient = Effect.gen(function* () {
         HttpClientRequest.prependUrl(config.apiBaseUrl),
         HttpClientRequest.acceptJson,
         HttpClientRequest.setHeader("content-type", "application/json"),
-        HttpClientRequest.setHeader("x-api-key", apiKey),
+        HttpClientRequest.setHeader("x-api-key", credential),
         HttpClientRequest.setHeader("user-agent", USER_AGENT),
       ),
     ),
@@ -210,7 +210,7 @@ export const requestText = (spec: TextRequestSpec) =>
 export const getAuthStatus = Effect.gen(function* () {
   const config = yield* loadAppConfig()
 
-  if (!config.apiKey) {
+  if (!config.credential) {
     return {
       configured: false,
       authenticated: false,

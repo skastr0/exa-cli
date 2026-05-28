@@ -10,7 +10,7 @@ import { ConfigurationError, MissingApiKeyError } from "./errors"
 
 export interface AppConfig {
   readonly apiBaseUrl: string
-  readonly apiKey?: string
+  readonly credential?: string
 }
 
 const normalizeBaseUrl = (rawValue: string): Effect.Effect<string, ConfigurationError> =>
@@ -43,18 +43,18 @@ export const loadAppConfig = Effect.fn("loadAppConfig")(function* () {
     Bun.env[API_BASE_URL_ENV] ?? DEFAULT_API_BASE_URL,
   )
 
-  const apiKey = Bun.env[API_KEY_ENV]?.trim()
+  const credential = Bun.env[API_KEY_ENV]?.trim()
 
   return {
     apiBaseUrl,
-    ...(apiKey && apiKey.length > 0 ? { apiKey } : {}),
+    ...(credential && credential.length > 0 ? { credential } : {}),
   } satisfies AppConfig
 })
 
-export const requireApiKey = Effect.fn("requireApiKey")(function* () {
+export const requireCredential = Effect.fn("requireCredential")(function* () {
   const config = yield* loadAppConfig()
 
-  if (!config.apiKey) {
+  if (!config.credential) {
     return yield* Effect.fail(
       new MissingApiKeyError({
         envVar: API_KEY_ENV,
@@ -63,5 +63,5 @@ export const requireApiKey = Effect.fn("requireApiKey")(function* () {
     )
   }
 
-  return config.apiKey
+  return config.credential
 })
