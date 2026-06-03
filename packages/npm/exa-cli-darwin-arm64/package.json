@@ -1,0 +1,29 @@
+{
+  "name": "@skastr0/exa-cli-darwin-arm64",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "exa-cli standalone CLI binary for macOS arm64.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/skastr0/exa-cli.git",
+    "directory": "packages/npm/exa-cli-darwin-arm64"
+  },
+  "homepage": "https://github.com/skastr0/exa-cli#readme",
+  "bugs": {
+    "url": "https://github.com/skastr0/exa-cli/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "arm64"
+  ],
+  "files": [
+    "bin",
+    "LICENSE"
+  ]
+}

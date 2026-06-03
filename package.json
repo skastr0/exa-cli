@@ -1,42 +1,10 @@
 {
-  "name": "@skastr0/exa-cli",
+  "name": "@skastr0/exa-cli-workspace",
   "version": "0.1.0",
+  "private": true,
   "type": "module",
-  "packageManager": "bun@1.3.14",
-  "files": [
-    "src",
-    "scripts",
-    "README.md",
-    "LICENSE",
-    "CHANGELOG.md"
-  ],
-  "bin": {
-    "exa-cli": "src/cli.ts"
-  },
-  "scripts": {
-    "dev": "bun run ./src/cli.ts",
-    "build": "bun scripts/build.ts",
-    "install:local": "bun scripts/install.ts",
-    "typecheck": "tsc --noEmit",
-    "test": "vitest run",
-    "verify": "bun run typecheck && bun run test && bun run build",
-    "pack:dry-run": "npm pack --dry-run",
-    "publish:dry-run": "bun publish --dry-run --access public"
-  },
-  "dependencies": {
-    "@effect/cli": "^0.75.0",
-    "@effect/platform": "^0.96.0",
-    "@effect/platform-bun": "^0.89.0",
-    "effect": "^3.21.0"
-  },
-  "devDependencies": {
-    "@effect/vitest": "^0.29.0",
-    "@types/bun": "^1.3.11",
-    "typescript": "^6.0.3",
-    "vitest": "^4.1.2"
-  },
+  "description": "JSON-first Effect CLI for Exa provider operations.",
   "license": "MIT",
-  "description": "Effect-powered CLI for Exa search workflows.",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/skastr0/exa-cli.git"
@@ -45,7 +13,44 @@
   "bugs": {
     "url": "https://github.com/skastr0/exa-cli/issues"
   },
-  "publishConfig": {
-    "access": "public"
+  "keywords": [
+    "exa",
+    "cli",
+    "search",
+    "research",
+    "bun"
+  ],
+  "packageManager": "bun@1.3.14",
+  "workspaces": [
+    "packages/npm/*"
+  ],
+  "overrides": {
+    "uuid": "11.1.1",
+    "ws": "8.20.1"
+  },
+  "scripts": {
+    "dev": "bun run ./src/cli.ts",
+    "build": "bun run build:cli",
+    "build:cli": "bun scripts/build.ts",
+    "build:npm-cli": "bun scripts/build-npm-cli-packages.ts",
+    "install:local": "bun scripts/install.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "verify": "bun run typecheck && bun run test && bun run build",
+    "smoke:npm-cli": "bun run build:npm-cli && node packages/npm/exa-cli/bin/exa-cli.js --version",
+    "pack:dry-run": "bun run build:npm-cli && npm pack --dry-run --workspace @skastr0/exa-cli-darwin-arm64 --workspace @skastr0/exa-cli-darwin-x64 --workspace @skastr0/exa-cli-linux-arm64 --workspace @skastr0/exa-cli-linux-x64 --workspace @skastr0/exa-cli",
+    "publish:dry-run": "bun scripts/publish-dry-run.ts"
+  },
+  "dependencies": {
+    "@effect/cli": "^0.75.1",
+    "@effect/platform": "^0.96.1",
+    "@effect/platform-bun": "^0.89.0",
+    "effect": "^3.21.2"
+  },
+  "devDependencies": {
+    "@effect/vitest": "^0.29.0",
+    "@types/bun": "^1.3.14",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.8"
   }
 }

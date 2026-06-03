@@ -3,6 +3,8 @@ node_modules/
 
 # Build artifacts
 dist/
+packages/npm/*/LICENSE
+packages/npm/exa-cli-*/bin/
 *.tgz
 *.log
 release.md

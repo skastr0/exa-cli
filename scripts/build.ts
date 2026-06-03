@@ -1,30 +1,34 @@
 #!/usr/bin/env bun
 
-import { mkdirSync, readFileSync, rmSync } from "fs";
-import { join } from "path";
+import { readFileSync } from "node:fs"
+import { chmod, mkdir, rm } from "node:fs/promises"
+import { join, resolve } from "node:path"
 
-const packageJson = JSON.parse(readFileSync("package.json", "utf8"));
-const version = packageJson.version;
-const distDir = "dist";
-const binaryName = "exa-cli";
+const repoRoot = resolve(import.meta.dir, "..")
+const packageJson = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8")) as {
+  readonly version?: string
+}
+const version = packageJson.version ?? "0.0.0"
+const distDir = join(repoRoot, "dist")
+const binaryName = "exa-cli"
 
 const targets = [
   { platform: "darwin", arch: "x64" },
   { platform: "darwin", arch: "arm64" },
   { platform: "linux", arch: "x64" },
   { platform: "linux", arch: "arm64" },
-];
+] as const
 
-console.log("Cleaning dist directory...");
-rmSync(distDir, { recursive: true, force: true });
-mkdirSync(distDir, { recursive: true });
+console.log("Cleaning dist directory...")
+await rm(distDir, { recursive: true, force: true })
+await mkdir(distDir, { recursive: true })
 
-console.log(`\nBuilding ${binaryName} v${version}...\n`);
+console.log(`\nBuilding ${binaryName} v${version}...\n`)
 
 for (const { platform, arch } of targets) {
-  const outfile = join(distDir, `${binaryName}-${platform}-${arch}`);
+  const outfile = join(distDir, `${binaryName}-${platform}-${arch}`)
 
-  console.log(`Building ${platform}-${arch}...`);
+  console.log(`Building ${platform}-${arch}...`)
 
   try {
     const buildResult = await Bun.build({
@@ -33,25 +37,26 @@ for (const { platform, arch } of targets) {
         target: `bun-${platform}-${arch}`,
         outfile,
       },
-      entrypoints: ["src/cli.ts"],
+      entrypoints: [join(repoRoot, "src", "cli.ts")],
       define: {
         APP_VERSION: `'${version}'`,
       },
       minify: true,
-    });
+    })
 
     if (!buildResult.success) {
-      console.error(`  ✗ Failed to build ${platform}-${arch}`);
+      console.error(`  ✗ Failed to build ${platform}-${arch}`)
       for (const log of buildResult.logs) {
-        console.error(log);
+        console.error(log)
       }
-      continue;
+      process.exit(1)
     }
 
-    await Bun.$`chmod +x ${outfile}`;
-    console.log(`  ✓ ${outfile}`);
+    await chmod(outfile, 0o755)
+    console.log(`  ✓ ${outfile}`)
   } catch (error) {
-    console.error(`  ✗ Error building ${platform}-${arch}:`, error);
+    console.error(`  ✗ Error building ${platform}-${arch}:`, error)
+    process.exit(1)
   }
 }
 
@@ -60,4 +65,4 @@ Build complete! Binaries in ${distDir}/
 
 To install locally:
   bun run install:local
-`);
+`)
