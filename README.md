@@ -13,7 +13,23 @@ Use this project when an agent or script needs a stable command-line contract fo
 
 ## Package
 
-The intended npm package is `@skastr0/exa-cli`. The package exposes the `exa-cli` binary and ships the TypeScript source for Bun execution.
+The intended npm package is `@skastr0/exa-cli`. The package exposes the `exa-cli` command through a Node launcher and delegates to a prebuilt Bun standalone binary for the current platform.
+
+After publication, use:
+
+```bash
+npx @skastr0/exa-cli --version
+bunx @skastr0/exa-cli --version
+pnpm dlx @skastr0/exa-cli --version
+```
+
+The npm CLI package set is:
+
+- `@skastr0/exa-cli`: runner package with `bin/exa-cli.js`
+- `@skastr0/exa-cli-darwin-arm64`: macOS arm64 standalone binary
+- `@skastr0/exa-cli-darwin-x64`: macOS x64 standalone binary
+- `@skastr0/exa-cli-linux-arm64`: Linux arm64 standalone binary
+- `@skastr0/exa-cli-linux-x64`: Linux x64 standalone binary
 
 Until packages are published, install from source:
 
@@ -195,10 +211,13 @@ Never commit credentials, `.env` files, payloads containing private data, provid
 
 ```bash
 bun install
+bun audit
 bun run typecheck
 bun run test
 bun run build
+bun run smoke:npm-cli
 bun run pack:dry-run
+bun run publish:dry-run
 ```
 
 The full local verification command is:
@@ -209,9 +228,15 @@ bun run verify
 
 The build script emits static binaries named `exa-cli-<platform>-<arch>` into `dist/`.
 
+The npm runner package layout follows the same shape as `../pulsar` and `../background-tasks`: `bun run build:npm-cli` compiles platform binaries, copies them into `packages/npm/exa-cli-*`, and leaves `packages/npm/exa-cli` as a small Node launcher package.
+
+See `PUBLISHING.md` before any public package, tag, workflow, or visibility action.
+
 ## CI
 
 GitHub Actions runs on pushes to `main` and on pull requests. The workflow installs with Bun, runs `bun run verify`, and inspects npm package contents with `bun run pack:dry-run`. Workflow permissions are read-only.
+
+Publishing is prepared in `.github/workflows/npm-publish.yml` and is gated by the `release` environment. It must not be dispatched or triggered by a release tag without explicit maintainer approval.
 
 ## Security
 
