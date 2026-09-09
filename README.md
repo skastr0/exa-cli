@@ -9,7 +9,7 @@
 - Repository visibility: private until explicitly approved for public access
 - Package channel: npm is the intended first channel, but the package is not published yet
 
-Use this project when an agent or script needs a stable command-line contract for Exa search, crawl, company research, LinkedIn search, code context, and deep research workflows. Do not use it as a credential store, scraping proxy, hosted research worker, or replacement for Exa's service terms and account controls.
+Use this project when an agent or script needs a stable command-line contract for Exa search, contents, answers, company research, people search, code context, and Agent research workflows. Do not use it as a credential store, scraping proxy, hosted research worker, or replacement for Exa's service terms and account controls.
 
 ## Package
 
@@ -83,9 +83,23 @@ Available commands:
 - `examples show <command-or-example-name>`
 - `web-search`
 - `code-context`
+- `contents`
 - `crawl`
+- `answer`
 - `company-research`
 - `linkedin-search`
+- `find-similar`
+- `agent start`
+- `agent run`
+- `agent check`
+- `agent inspect`
+- `agent list`
+- `agent wait`
+- `agent events`
+- `agent stream`
+- `agent cancel`
+- `agent stop`
+- `agent delete`
 - `deep-research start`
 - `deep-research run`
 - `deep-research check`
@@ -94,7 +108,7 @@ Available commands:
 - `deep-research wait`
 - `deep-research events`
 - `deep-research stream`
-- `find-similar`
+- `deep-research cancel`
 
 ## Batch Commands
 
@@ -102,7 +116,9 @@ The fan-out commands accept either one object or an array of objects:
 
 - `web-search`
 - `code-context`
+- `contents`
 - `crawl`
+- `answer`
 - `company-research`
 - `linkedin-search`
 - `find-similar`
@@ -125,22 +141,24 @@ Search, crawl, and research commands support:
 
 Set `EXA_CLI_HOME` to relocate all CLI-local runtime data. Set `EXA_CLI_ARTIFACT_DIR` only when you explicitly want artifacts in a specific directory, including a project directory.
 
-## Deep Research
+## Agent Runs
 
-Deep research uses Exa's asynchronous research API:
+Long-running research uses Exa's Agent API:
 
-- `deep-research start @payload.json`
-- `deep-research run @payload.json`
-- `deep-research check @payload.json`
-- `deep-research inspect @payload.json`
-- `deep-research list @payload.json`
-- `deep-research wait @payload.json`
-- `deep-research events @payload.json`
-- `deep-research stream @payload.json`
+- `agent start @payload.json`
+- `agent check @payload.json`
+- `agent wait @payload.json`
+- `agent events @payload.json`
+- `agent stream @payload.json`
+- `agent cancel @payload.json`
+- `agent stop @payload.json`
+- `agent delete @payload.json`
 
-`run` is an alias for `start`; `inspect` is an alias for `check`. `wait` polls until `completed`, `canceled`, or `failed`. `events` fetches the provider event log, and `stream` collects provider SSE events into a JSON envelope.
+`run` is an alias for `start`; `inspect` is an alias for `check`. `wait` polls until `completed`, `cancelled`, or `failed`. `events` fetches stored events. `stream` collects provider SSE into a JSON envelope. `stop` is documented for `effort: "max"` and sends the required beta header.
 
-The provider does not document a research-task cancel endpoint. `capabilities` reports cancel as unsupported.
+`deep-research *` keeps the old command names as aliases over Agent runs. `/research/v1` was retired on 2026-05-01. `instructions` maps to Agent `query`; `researchId`/`taskId` map to Agent `id`. The retired `model` field is rejected. Synchronous synthesis without a task lifecycle is `web-search` with `type: "deep-reasoning"`.
+
+`find-similar` still calls `POST /findSimilar`, which Exa marks deprecated. Prefer `web-search`.
 
 ## Discovery
 
@@ -173,8 +191,20 @@ cat > payloads/web-search-batch.json <<'JSON'
 ]
 JSON
 
+cat > payloads/contents.json <<'JSON'
+{"url":"https://example.com","text":true,"highlights":{"query":"API contract"}}
+JSON
+
 cat > payloads/crawl.json <<'JSON'
 {"url":"https://example.com","maxCharacters":3000}
+JSON
+
+cat > payloads/answer.json <<'JSON'
+{"query":"What is the Exa Search API?"}
+JSON
+
+cat > payloads/agent-start.json <<'JSON'
+{"query":"Research the Exa API","effort":"medium"}
 JSON
 
 cat > payloads/deep-research-start.json <<'JSON'
@@ -182,7 +212,7 @@ cat > payloads/deep-research-start.json <<'JSON'
 JSON
 
 cat > payloads/deep-research-wait.json <<'JSON'
-{"researchId":"01jszdfs0052sg4jc552sg4jc5","intervalMs":2000,"timeoutMs":180000}
+{"researchId":"agent_run_01j7x9v0m2n4p6q8r0s2t4v6w8","intervalMs":2000,"timeoutMs":180000}
 JSON
 ```
 
@@ -191,7 +221,10 @@ Run commands:
 ```bash
 bun run dev web-search @payloads/web-search.json
 bun run dev web-search --concurrency 2 @payloads/web-search-batch.json
+bun run dev contents @payloads/contents.json
 bun run dev crawl --output artifact @payloads/crawl.json
+bun run dev answer @payloads/answer.json
+bun run dev agent start @payloads/agent-start.json
 bun run dev deep-research start @payloads/deep-research-start.json
 bun run dev deep-research wait @payloads/deep-research-wait.json
 ```

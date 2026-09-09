@@ -33,18 +33,14 @@ that can be used directly or wrapped by thin harness plugins later.
 - `examples show <command-or-example-name>`
 - `web-search`
 - `code-context`
+- `contents`
 - `crawl`
+- `answer`
 - `company-research`
 - `linkedin-search`
-- `deep-research start`
-- `deep-research run`
-- `deep-research check`
-- `deep-research inspect`
-- `deep-research list`
-- `deep-research wait`
-- `deep-research events`
-- `deep-research stream`
 - `find-similar`
+- `agent start|run|check|inspect|list|wait|events|stream|cancel|stop|delete`
+- `deep-research start|run|check|inspect|list|wait|events|stream|cancel`
 
 ## Environment
 
