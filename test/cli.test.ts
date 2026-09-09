@@ -785,9 +785,14 @@ describe("exa CLI", () => {
       )
       const capabilitiesPayload = expectJson<{
         data: {
-          search: { default_type: string }
+          search: { default_type: string; research_replacement: string }
           agent: { lifecycle: ReadonlyArray<{ action: string; supported: boolean }> }
-          deep_research: { lifecycle: ReadonlyArray<{ action: string; supported: boolean }> }
+          deep_research: {
+            aliases_agent: boolean
+            documented_replacement: string
+            not_the_same_as: string
+            lifecycle: ReadonlyArray<{ action: string; supported: boolean }>
+          }
         }
       }>(capabilities.stdout)
       const schemaPayload = expectJson<{ data: { command: string; batch: boolean; schema: unknown } }>(
@@ -805,6 +810,14 @@ describe("exa CLI", () => {
         expect.objectContaining({ name: "api_key", ok: false }),
       )
       expect(capabilitiesPayload.data.search.default_type).toBe("auto")
+      expect(capabilitiesPayload.data.search.research_replacement).toBe("deep-reasoning")
+      expect(capabilitiesPayload.data.deep_research.aliases_agent).toBe(true)
+      expect(capabilitiesPayload.data.deep_research.documented_replacement).toBe(
+        "POST /search type deep-reasoning",
+      )
+      expect(capabilitiesPayload.data.deep_research.not_the_same_as).toBe(
+        "web-search type deep-reasoning",
+      )
       expect(capabilitiesPayload.data.agent.lifecycle).toContainEqual(
         expect.objectContaining({ action: "cancel", supported: true }),
       )
@@ -1013,10 +1026,14 @@ describe("exa CLI", () => {
           expect(server.requests[0]?.body).toMatchObject({ query: "Research Effect", effort: "max" })
           expect(server.requests[1]?.method).toBe("POST")
           expect(server.requests[1]?.path).toBe("/agent/runs/agent_run_1/cancel")
+          expect(server.requests[1]?.headers["content-type"]).toBeUndefined()
+          expect(server.requests[1]?.body).toBeUndefined()
           expect(server.requests[2]?.path).toBe("/agent/runs/agent_run_1/stop")
+          expect(server.requests[2]?.headers["content-type"]).toBeUndefined()
           expect(server.requests[2]?.headers["exa-beta"]).toBe("agent-max-effort-2026-07-27")
           expect(server.requests[3]?.method).toBe("DELETE")
           expect(server.requests[3]?.path).toBe("/agent/runs/agent_run_1")
+          expect(server.requests[3]?.headers["content-type"]).toBeUndefined()
         }),
     ),
   )
@@ -1036,6 +1053,69 @@ describe("exa CLI", () => {
       expect(result.exitCode).toBe(1)
       expect(payload.error.type).toBe("CommandInputError")
       expect(payload.error.details?.field).toBe("model")
+    }),
+  )
+
+  it.effect("rejects search and agent fields that 400 against the current Exa API", () =>
+    Effect.gen(function* () {
+      const batchField = (stdout: string) =>
+        expectJson<{
+          data: { results: ReadonlyArray<{ error?: { details?: { field?: string } } }> }
+        }>(stdout).data.results[0]?.error?.details?.field
+
+      const commandField = (stderr: string) =>
+        expectJson<{ error: { details?: { field?: string } } }>(stderr).error.details?.field
+
+      const neural = yield* runCli(['web-search', '{"query":"Effect","type":"neural"}'], {
+        EXA_API_KEY: "test-key",
+      })
+      const entityText = yield* runCli(
+        ['web-search', '{"query":"Acme","category":"company","includeText":"GmbH"}'],
+        { EXA_API_KEY: "test-key" },
+      )
+      const phrase = yield* runCli(
+        ['web-search', '{"query":"Effect","includeText":["one","two"]}'],
+        { EXA_API_KEY: "test-key" },
+      )
+      const financial = yield* runCli(
+        ['web-search', '{"query":"10-K","category":"financial report","excludeText":"draft"}'],
+        { EXA_API_KEY: "test-key" },
+      )
+      const budget = yield* runCli(
+        ['agent', 'start', '{"query":"Research Effect","effort":"medium","budget":{"maxCostDollars":10}}'],
+        { EXA_API_KEY: "test-key" },
+      )
+      const sources = yield* runCli(
+        [
+          "agent",
+          "start",
+          JSON.stringify({
+            query: "Research Effect",
+            dataSources: [
+              { provider: "fiber" },
+              { provider: "similarweb" },
+              { provider: "baselayer" },
+              { provider: "affiliate" },
+              { provider: "particle" },
+              { provider: "jinko" },
+            ],
+          }),
+        ],
+        { EXA_API_KEY: "test-key" },
+      )
+
+      expect(neural.exitCode).toBe(1)
+      expect(batchField(neural.stdout)).toBe("type")
+      expect(entityText.exitCode).toBe(1)
+      expect(batchField(entityText.stdout)).toBe("category")
+      expect(phrase.exitCode).toBe(1)
+      expect(batchField(phrase.stdout)).toBe("includeText")
+      expect(financial.exitCode).toBe(1)
+      expect(batchField(financial.stdout)).toBe("excludeText")
+      expect(budget.exitCode).toBe(1)
+      expect(commandField(budget.stderr)).toBe("budget")
+      expect(sources.exitCode).toBe(1)
+      expect(commandField(sources.stderr)).toBe("dataSources")
     }),
   )
 

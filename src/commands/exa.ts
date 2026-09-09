@@ -45,7 +45,8 @@ const UnknownRecord = Schema.Record({
   value: Schema.Unknown,
 })
 
-const SearchType = Schema.Literal("auto", "fast", "instant", "deep-lite", "deep", "deep-reasoning")
+const PublicSearchType = Schema.Literal("auto", "fast", "instant", "deep-lite", "deep", "deep-reasoning")
+const SearchType = Schema.Union(PublicSearchType, Schema.Literal("neural"))
 const LivecrawlMode = Schema.Literal("never", "always", "fallback", "preferred")
 const SearchCategory = Schema.Literal(
   "company",
@@ -370,12 +371,15 @@ const contentsDomainRules = [
 ]
 
 const searchDomainRules = [
-  "Search types are auto, fast, instant, deep-lite, deep, and deep-reasoning. neural is no longer a public type.",
+  "Search types are auto, fast, instant, deep-lite, deep, and deep-reasoning. neural is rejected.",
   "Known categories: company, publication, news, personal site, financial report, people. research paper, pdf, github, and tweet are deprecated hints.",
-  "company and people do not support startPublishedDate, endPublishedDate, or excludeDomains.",
+  "company and people do not support startPublishedDate, endPublishedDate, excludeDomains, includeText, or excludeText.",
+  "financial report does not support excludeText.",
+  "includeText and excludeText are phrase filters: exactly one string of at most 5 words.",
   "additionalQueries is only valid with deep-lite, deep, or deep-reasoning.",
   "stream requires outputSchema and collects provider SSE into the JSON envelope.",
   "livecrawl and context are deprecated; prefer maxAgeHours, highlights, or text.",
+  "type deep-reasoning is synchronous POST /search. It is not an Agent run and has no task lifecycle.",
 ]
 
 export const exaCommandContracts: ReadonlyArray<ExaCommandContract> = [
@@ -507,7 +511,11 @@ export const exaCommandContracts: ReadonlyArray<ExaCommandContract> = [
     batch: false,
     outputModes,
     lifecycle: true,
-    domainRules: ["effort max sends Exa-Beta: agent-max-effort-2026-07-27."],
+    domainRules: [
+      "effort max sends Exa-Beta: agent-max-effort-2026-07-27.",
+      "budget.maxCostDollars is valid only with effort auto or max, range 1-100.",
+      "dataSources accepts at most 5 providers.",
+    ],
     examples: [{ name: "agent-start", input: { query: "Research the Exa API", effort: "medium" } }],
   },
   {
@@ -517,6 +525,11 @@ export const exaCommandContracts: ReadonlyArray<ExaCommandContract> = [
     batch: false,
     outputModes,
     lifecycle: true,
+    domainRules: [
+      "effort max sends Exa-Beta: agent-max-effort-2026-07-27.",
+      "budget.maxCostDollars is valid only with effort auto or max, range 1-100.",
+      "dataSources accepts at most 5 providers.",
+    ],
     examples: [{ name: "agent-run", input: { query: "Research the Exa API" } }],
   },
   {
@@ -625,9 +638,11 @@ export const exaCommandContracts: ReadonlyArray<ExaCommandContract> = [
     lifecycle: true,
     deprecated: true,
     domainRules: [
-      "Aliases agent start. /research/v1 was retired on 2026-05-01.",
+      "Aliases agent start so the old async lifecycle still works. Exa replaced /research with POST /search type deep-reasoning, which is a different product.",
       "Provide instructions or query.",
       "Do not send model; use effort.",
+      "budget.maxCostDollars is valid only with effort auto or max.",
+      "dataSources accepts at most 5 providers.",
     ],
     examples: [{ name: "start", input: { instructions: "Research the Exa API" } }],
   },
@@ -819,21 +834,71 @@ const validateUserLocation = (value: string | undefined) =>
       )
     : Effect.void
 
+const phraseFilterItems = (value: string | ReadonlyArray<string>) =>
+  typeof value === "string" ? [value] : [...value]
+
+const validatePhraseFilter = (field: string, value: string | ReadonlyArray<string> | undefined) => {
+  if (value === undefined) {
+    return Effect.void
+  }
+
+  const items = phraseFilterItems(value)
+  if (items.length !== 1) {
+    return Effect.fail(
+      new CommandInputError({
+        field,
+        message: `${field} must contain exactly 1 string of at most 5 words`,
+      }),
+    )
+  }
+
+  const words = items[0]?.trim().split(/\s+/).filter((word) => word.length > 0) ?? []
+  if (words.length === 0 || words.length > 5) {
+    return Effect.fail(
+      new CommandInputError({
+        field,
+        message: `${field} must contain exactly 1 string of at most 5 words`,
+      }),
+    )
+  }
+
+  return Effect.void
+}
+
 const validateEntityCategoryFilters = (input: {
   readonly category?: string | undefined
   readonly startPublishedDate?: string | undefined
   readonly endPublishedDate?: string | undefined
   readonly excludeDomains?: ReadonlyArray<string> | undefined
+  readonly includeText?: string | ReadonlyArray<string> | undefined
+  readonly excludeText?: string | ReadonlyArray<string> | undefined
 }) => {
+  if (input.category === "financial report" && input.excludeText !== undefined) {
+    return Effect.fail(
+      new CommandInputError({
+        field: "excludeText",
+        message: "financial report does not support excludeText",
+      }),
+    )
+  }
+
   if (!input.category || !ENTITY_CATEGORIES.has(input.category)) {
     return Effect.void
   }
 
-  if (input.startPublishedDate || input.endPublishedDate || input.excludeDomains) {
+  const unsupported = [
+    input.startPublishedDate ? "startPublishedDate" : undefined,
+    input.endPublishedDate ? "endPublishedDate" : undefined,
+    input.excludeDomains ? "excludeDomains" : undefined,
+    input.includeText ? "includeText" : undefined,
+    input.excludeText ? "excludeText" : undefined,
+  ].filter((field): field is string => field !== undefined)
+
+  if (unsupported.length > 0) {
     return Effect.fail(
       new CommandInputError({
         field: "category",
-        message: `${input.category} does not support startPublishedDate, endPublishedDate, or excludeDomains`,
+        message: `${input.category} does not support ${unsupported.join(", ")}`,
       }),
     )
   }
@@ -1040,8 +1105,19 @@ const webSearch = (input: WebSearchInput) =>
     yield* validateIntegerRange("contextMaxCharacters", input.contextMaxCharacters, 1, 10000)
     yield* validateUserLocation(input.userLocation)
     yield* validateEntityCategoryFilters(input)
+    yield* validatePhraseFilter("includeText", input.includeText)
+    yield* validatePhraseFilter("excludeText", input.excludeText)
     const contents = resolveSearchContents(input)
     yield* validateContentsOptions(contents, "contents.")
+
+    if (input.type === "neural") {
+      return yield* Effect.fail(
+        new CommandInputError({
+          field: "type",
+          message: "neural is no longer a public search type. Use auto, fast, or instant.",
+        }),
+      )
+    }
 
     const type = input.type ?? "auto"
     if (input.additionalQueries && !DEEP_SEARCH_TYPES.has(type)) {
@@ -1377,6 +1453,25 @@ const linkedinSearch = (input: LinkedinSearchInput) =>
 const agentStart = (input: AgentStartInput) =>
   Effect.gen(function* () {
     yield* validateNonEmpty("query", input.query)
+    if (input.dataSources && input.dataSources.length > 5) {
+      yield* Effect.fail(
+        new CommandInputError({
+          field: "dataSources",
+          message: "dataSources must contain at most 5 providers",
+        }),
+      )
+    }
+
+    const effort = input.effort ?? "auto"
+    if (input.budget !== undefined && effort !== "auto" && effort !== "max") {
+      yield* Effect.fail(
+        new CommandInputError({
+          field: "budget",
+          message: "budget is only valid with effort auto or max",
+        }),
+      )
+    }
+
     if (input.budget?.maxCostDollars !== undefined) {
       yield* validatePositiveNumber("budget.maxCostDollars", input.budget.maxCostDollars)
       if (input.budget.maxCostDollars < 1 || input.budget.maxCostDollars > 100) {
@@ -1389,7 +1484,6 @@ const agentStart = (input: AgentStartInput) =>
       }
     }
 
-    const effort = input.effort ?? "auto"
     const data = yield* requestJson({
       method: "POST",
       path: "/agent/runs",

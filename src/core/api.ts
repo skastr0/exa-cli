@@ -40,7 +40,6 @@ const baseClient = Effect.gen(function* () {
     HttpClient.mapRequest((request) =>
       request.pipe(
         HttpClientRequest.prependUrl(config.apiBaseUrl),
-        HttpClientRequest.setHeader("content-type", "application/json"),
         HttpClientRequest.setHeader("x-api-key", credential),
         HttpClientRequest.setHeader("user-agent", USER_AGENT),
       ),
@@ -62,7 +61,13 @@ const buildRequest = (
 
   const headerEntries = Object.entries(spec.headers ?? {})
   const hasAccept = headerEntries.some(([key]) => key.toLowerCase() === "accept")
-  const withIntegration = request.pipe(HttpClientRequest.setHeader("x-exa-integration", spec.integration))
+  const withJsonContentType =
+    spec.body === undefined
+      ? request
+      : request.pipe(HttpClientRequest.setHeader("content-type", "application/json"))
+  const withIntegration = withJsonContentType.pipe(
+    HttpClientRequest.setHeader("x-exa-integration", spec.integration),
+  )
   const withAccept = hasAccept ? withIntegration : withIntegration.pipe(HttpClientRequest.acceptJson)
 
   return headerEntries.reduce(

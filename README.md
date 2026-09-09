@@ -156,7 +156,7 @@ Long-running research uses Exa's Agent API:
 
 `run` is an alias for `start`; `inspect` is an alias for `check`. `wait` polls until `completed`, `cancelled`, or `failed`. `events` fetches stored events. `stream` collects provider SSE into a JSON envelope. `stop` is documented for `effort: "max"` and sends the required beta header.
 
-`deep-research *` keeps the old command names as aliases over Agent runs. `/research/v1` was retired on 2026-05-01. `instructions` maps to Agent `query`; `researchId`/`taskId` map to Agent `id`. The retired `model` field is rejected. Synchronous synthesis without a task lifecycle is `web-search` with `type: "deep-reasoning"`.
+`deep-research *` keeps the old lifecycle command names as aliases over Agent runs. Exa retired `/research` on 2026-05-01 and replaced it with `web-search` `type: "deep-reasoning"` (synchronous, no task ids). Agent is a different product. `instructions` maps to Agent `query`; `researchId`/`taskId` map to Agent `id`. The retired `model` field is rejected.
 
 `find-similar` still calls `POST /findSimilar`, which Exa marks deprecated. Prefer `web-search`.
 

@@ -229,9 +229,11 @@ const deepResearchCapabilities = () => ({
   provider_api: "/agent/runs",
   retired_provider_api: "/research/v1",
   retired_on: "2026-05-01",
+  documented_replacement: "POST /search type deep-reasoning",
   aliases_agent: true,
+  not_the_same_as: "web-search type deep-reasoning",
   provider_notice:
-    "Exa retired /research/v1 on 2026-05-01. deep-research commands now alias Agent runs. Synchronous synthesis is web-search type deep-reasoning, which has no task lifecycle.",
+    "Exa retired /research on 2026-05-01. The documented replacement is POST /search with type deep-reasoning (synchronous synthesis, no task ids). Agent is a different June 2026 product with effort, dataSources, and async /agent/runs. deep-research * keeps the old lifecycle command names as Agent aliases; it is not deep-reasoning search.",
   input_mapping: {
     instructions: "query",
     researchId: "id",
@@ -245,8 +247,16 @@ const searchCapabilities = () => ({
   types: ["auto", "fast", "instant", "deep-lite", "deep", "deep-reasoning"],
   removed_types: ["neural"],
   default_type: "auto",
+  research_replacement: "deep-reasoning",
   categories: ["company", "publication", "news", "personal site", "financial report", "people"],
   deprecated_categories: ["research paper", "pdf", "github", "tweet"],
+  unsupported_entity_filters: [
+    "startPublishedDate",
+    "endPublishedDate",
+    "excludeDomains",
+    "includeText",
+    "excludeText",
+  ],
   contents: {
     nested_under: "contents",
     fields: [
