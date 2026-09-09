@@ -1,6 +1,6 @@
 {
   "name": "@skastr0/exa-cli",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "description": "JSON-first Exa provider CLI for agent and script workflows.",
   "license": "MIT",
@@ -35,9 +35,9 @@
     "node": ">=18"
   },
   "optionalDependencies": {
-    "@skastr0/exa-cli-darwin-arm64": "0.1.0",
-    "@skastr0/exa-cli-darwin-x64": "0.1.0",
-    "@skastr0/exa-cli-linux-arm64": "0.1.0",
-    "@skastr0/exa-cli-linux-x64": "0.1.0"
+    "@skastr0/exa-cli-darwin-arm64": "0.2.0",
+    "@skastr0/exa-cli-darwin-x64": "0.2.0",
+    "@skastr0/exa-cli-linux-arm64": "0.2.0",
+    "@skastr0/exa-cli-linux-x64": "0.2.0"
   }
 }

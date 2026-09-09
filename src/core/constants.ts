@@ -1,5 +1,5 @@
 export const CLI_NAME = "exa-cli"
-export const CLI_VERSION = "0.1.0"
+export const CLI_VERSION = "0.2.0"
 export const CLI_DATA_DIR_NAME = "exa-cli"
 export const CLI_HOME_ENV = "EXA_CLI_HOME"
 export const ARTIFACT_DIR_ENV = "EXA_CLI_ARTIFACT_DIR"
