@@ -7,6 +7,7 @@ import { homedir, tmpdir } from "node:os"
 import { join } from "node:path"
 
 import {
+  AgentWaitTimeoutError,
   ApiDecodeError,
   ApiRequestError,
   ApiResponseError,
@@ -227,15 +228,17 @@ describe("exa CLI", () => {
           expect(server.requests[0]?.headers["x-exa-integration"]).toBe("exa-cli-web-search")
           expect(server.requests[0]?.body).toMatchObject({
             query: "Effect Schema",
-            type: "instant",
+            type: "auto",
             numResults: 8,
             includeText: ["Effect"],
             contents: {
               text: true,
               context: { maxCharacters: 4000 },
-              livecrawl: "fallback",
             },
           })
+          expect(
+            (server.requests[0]?.body as { contents?: { livecrawl?: string } } | undefined)?.contents?.livecrawl,
+          ).toBeUndefined()
         }),
     ),
   )
@@ -243,7 +246,7 @@ describe("exa CLI", () => {
   it.effect("code-context validates token bounds before calling Exa", () =>
     Effect.gen(function* () {
       const result = yield* runCli(
-        ["code-context", '{"query":"React useState","tokensNum":999}'],
+        ["code-context", '{"query":"React useState","tokensNum":49}'],
         {
           EXA_API_KEY: "test-key",
         },
@@ -298,16 +301,14 @@ describe("exa CLI", () => {
           expect(server.requests[0]?.path).toBe("/contents")
           expect(server.requests[0]?.body).toMatchObject({
             urls: ["https://example.com"],
-            contents: {
-              text: { maxCharacters: 1200 },
-              livecrawl: "preferred",
-            },
+            text: { maxCharacters: 1200 },
+            maxAgeHours: 0,
           })
         }),
     ),
   )
 
-  it.effect("company-research keeps the old provider defaults", () =>
+  it.effect("company-research uses category company search", () =>
     withTestServer(
       async (request, response, record) => {
         const body = await readRequestBody(request)
@@ -327,15 +328,15 @@ describe("exa CLI", () => {
           expect(result.exitCode).toBe(0)
           expect(server.requests[0]?.path).toBe("/search")
           expect(server.requests[0]?.body).toMatchObject({
-            query: "Acme company business corporation information news financial",
-            type: "instant",
-            includeDomains: expect.arrayContaining(["reuters.com", "sec.gov", "linkedin.com"]),
+            query: "Acme",
+            type: "auto",
+            category: "company",
           })
         }),
     ),
   )
 
-  it.effect("linkedin-search scopes searches to linkedin.com", () =>
+  it.effect("linkedin-search uses people category for profiles", () =>
     withTestServer(
       async (request, response, record) => {
         const body = await readRequestBody(request)
@@ -354,27 +355,40 @@ describe("exa CLI", () => {
 
           expect(result.exitCode).toBe(0)
           expect(server.requests[0]?.body).toMatchObject({
-            query: "Jane Doe LinkedIn profile",
-            includeDomains: ["linkedin.com"],
+            query: "Jane Doe",
+            type: "auto",
+            category: "people",
           })
         }),
     ),
   )
 
-  it.effect("deep-research start and check use research task endpoints", () =>
+  it.effect("deep-research start and check alias Agent run endpoints", () =>
     withTestServer(
       async (request, response, record) => {
         const body = await readRequestBody(request)
         record(body)
         if (request.method === "POST") {
-          writeJson(response, 201, { researchId: "task_123", status: "running" })
+          writeJson(response, 200, {
+            id: "agent_run_task_123",
+            object: "agent_run",
+            status: "running",
+            stopReason: null,
+            createdAt: "2026-09-09T00:00:00.000Z",
+            completedAt: null,
+            request: { query: "Research Effect" },
+            output: { text: "", structured: null, grounding: [] },
+            usage: { agentComputeUnits: 0, searches: 0, emails: 0, phoneNumbers: 0 },
+            costDollars: { total: 0, agentCompute: 0, search: 0, emails: 0, phoneNumbers: 0 },
+          })
           return
         }
 
         writeJson(response, 200, {
-          researchId: "task_123",
+          id: "agent_run_task_123",
+          object: "agent_run",
           status: "completed",
-          data: { report: "done" },
+          stopReason: "schema_satisfied",
         })
       },
       (server) =>
@@ -387,23 +401,27 @@ describe("exa CLI", () => {
             },
           )
           const check = yield* runCli(
-            ["deep-research", "check", '{"researchId":"task_123"}'],
+            ["deep-research", "check", '{"researchId":"agent_run_task_123"}'],
             {
               EXA_API_KEY: "test-key",
               EXA_API_BASE_URL: server.baseUrl,
             },
           )
 
+          const startPayload = expectJson<{ data: { runId: string; researchId: string } }>(start.stdout)
+
           expect(start.exitCode).toBe(0)
           expect(check.exitCode).toBe(0)
+          expect(startPayload.data.runId).toBe("agent_run_task_123")
+          expect(startPayload.data.researchId).toBe("agent_run_task_123")
           expect(server.requests[0]?.method).toBe("POST")
-          expect(server.requests[0]?.path).toBe("/research/v1")
+          expect(server.requests[0]?.path).toBe("/agent/runs")
           expect(server.requests[0]?.body).toMatchObject({
-            model: "exa-research",
-            instructions: "Research Effect",
+            query: "Research Effect",
+            effort: "auto",
           })
           expect(server.requests[1]?.method).toBe("GET")
-          expect(server.requests[1]?.path).toBe("/research/v1/task_123")
+          expect(server.requests[1]?.path).toBe("/agent/runs/agent_run_task_123")
         }),
     ),
   )
@@ -632,39 +650,46 @@ describe("exa CLI", () => {
         const body = await readRequestBody(request)
         record(body)
 
-        if (request.method === "POST") {
-          writeJson(response, 201, { researchId: "task_123", status: "running" })
+        if (request.method === "POST" && request.url === "/agent/runs") {
+          writeJson(response, 200, {
+            id: "task_123",
+            object: "agent_run",
+            status: "running",
+          })
           return
         }
 
-        if (request.url === "/research/v1?limit=2") {
+        if (request.url === "/agent/runs?limit=2") {
           writeJson(response, 200, {
-            data: [{ researchId: "task_123", status: "running" }],
+            object: "list",
+            data: [{ id: "task_123", status: "running" }],
             hasMore: false,
             nextCursor: null,
           })
           return
         }
 
-        if (request.url === "/research/v1/task_123?events=true") {
+        if (request.url === "/agent/runs/task_123/events") {
+          if (request.headers.accept === "text/event-stream") {
+            response.writeHead(200, { "content-type": "text/event-stream" })
+            response.end('event: update\ndata: {"status":"running"}\n\nevent: done\ndata: {"status":"completed"}\n\n')
+            return
+          }
+
           writeJson(response, 200, {
-            researchId: "task_123",
-            status: "completed",
-            events: [{ type: "research.completed" }],
+            object: "list",
+            data: [{ id: "2", event: "agent_run.completed", data: { status: "completed" }, createdAt: "2026-09-09T00:00:00.000Z" }],
+            hasMore: false,
+            nextCursor: null,
           })
           return
         }
 
-        if (request.url === "/research/v1/task_123?stream=true") {
-          response.writeHead(200, { "content-type": "text/event-stream" })
-          response.end('event: update\ndata: {"status":"running"}\n\nevent: done\ndata: {"status":"completed"}\n\n')
-          return
-        }
-
         writeJson(response, 200, {
-          researchId: "task_123",
+          id: "task_123",
+          object: "agent_run",
           status: "completed",
-          data: { report: "done" },
+          output: { text: "done", structured: null, grounding: [] },
         })
       },
       (server) =>
@@ -726,11 +751,10 @@ describe("exa CLI", () => {
           expect(streamPayload.data.event_count).toBe(2)
           expect(server.requests.map((request) => request.path)).toEqual(
             expect.arrayContaining([
-              "/research/v1",
-              "/research/v1/task_123",
-              "/research/v1?limit=2",
-              "/research/v1/task_123?events=true",
-              "/research/v1/task_123?stream=true",
+              "/agent/runs",
+              "/agent/runs/task_123",
+              "/agent/runs?limit=2",
+              "/agent/runs/task_123/events",
             ]),
           )
         }),
@@ -760,7 +784,11 @@ describe("exa CLI", () => {
         doctor.stdout,
       )
       const capabilitiesPayload = expectJson<{
-        data: { deep_research: { lifecycle: ReadonlyArray<{ action: string; supported: boolean }> } }
+        data: {
+          search: { default_type: string }
+          agent: { lifecycle: ReadonlyArray<{ action: string; supported: boolean }> }
+          deep_research: { lifecycle: ReadonlyArray<{ action: string; supported: boolean }> }
+        }
       }>(capabilities.stdout)
       const schemaPayload = expectJson<{ data: { command: string; batch: boolean; schema: unknown } }>(
         schema.stdout,
@@ -776,8 +804,12 @@ describe("exa CLI", () => {
       expect(doctorPayload.data.checks).toContainEqual(
         expect.objectContaining({ name: "api_key", ok: false }),
       )
+      expect(capabilitiesPayload.data.search.default_type).toBe("auto")
+      expect(capabilitiesPayload.data.agent.lifecycle).toContainEqual(
+        expect.objectContaining({ action: "cancel", supported: true }),
+      )
       expect(capabilitiesPayload.data.deep_research.lifecycle).toContainEqual(
-        expect.objectContaining({ action: "cancel", supported: false }),
+        expect.objectContaining({ action: "cancel", supported: true }),
       )
       expect(schemaPayload.data.command).toBe("web-search")
       expect(schemaPayload.data.batch).toBe(true)
@@ -799,6 +831,211 @@ describe("exa CLI", () => {
       expect(result.stdout).toContain("schema")
       expect(result.stdout).toContain("examples")
       expect(result.stdout).toContain("deep-research wait")
+      expect(result.stdout).toContain("contents")
+      expect(result.stdout).toContain("answer")
+      expect(result.stdout).toContain("agent")
+    }),
+  )
+
+  it.effect("contents sends top-level /contents options and rejects mixed identifiers", () =>
+    withTestServer(
+      async (request, response, record) => {
+        const body = await readRequestBody(request)
+        record(body)
+        writeJson(response, 200, {
+          results: [{ id: "https://example.com", text: "page" }],
+          statuses: [{ id: "https://example.com", status: "success", source: "cached" }],
+        })
+      },
+      (server) =>
+        Effect.gen(function* () {
+          const result = yield* runCli(
+            [
+              "contents",
+              '{"ids":["https://example.com"],"highlights":{"query":"API","dynamic":true},"summary":{"query":"overview"}}',
+            ],
+            {
+              EXA_API_KEY: "test-key",
+              EXA_API_BASE_URL: server.baseUrl,
+            },
+          )
+          const mixed = yield* runCli(
+            ["contents", '{"ids":["https://example.com"],"urls":["https://example.com"]}'],
+            {
+              EXA_API_KEY: "test-key",
+              EXA_API_BASE_URL: server.baseUrl,
+            },
+          )
+
+          const mixedPayload = expectJson<{
+            data: { results: ReadonlyArray<{ error?: { details?: { field?: string } } }> }
+          }>(mixed.stdout)
+
+          expect(result.exitCode).toBe(0)
+          expect(server.requests[0]?.path).toBe("/contents")
+          expect(server.requests[0]?.headers["exa-beta"]).toBe("dynamic-highlights-2026-08-28")
+          expect(server.requests[0]?.body).toMatchObject({
+            ids: ["https://example.com"],
+            highlights: { query: "API", dynamic: true },
+            summary: { query: "overview" },
+          })
+          expect(mixed.exitCode).toBe(1)
+          expect(mixedPayload.data.results[0]?.error?.details?.field).toBe("ids")
+        }),
+    ),
+  )
+
+  it.effect("web-search sends contents options, rejects additionalQueries on auto, and sets deep-reasoning outputSchema", () =>
+    withTestServer(
+      async (request, response, record) => {
+        const body = await readRequestBody(request)
+        record(body)
+        writeJson(response, 200, {
+          results: [],
+          output: { content: { summary: "ok" }, grounding: [] },
+        })
+      },
+      (server) =>
+        Effect.gen(function* () {
+          const deep = yield* runCli(
+            [
+              "web-search",
+              '{"query":"Exa API","type":"deep-reasoning","outputSchema":{"type":"object","properties":{"summary":{"type":"string"}}},"contents":{"highlights":true,"maxAgeHours":24}}',
+            ],
+            {
+              EXA_API_KEY: "test-key",
+              EXA_API_BASE_URL: server.baseUrl,
+            },
+          )
+          const invalid = yield* runCli(
+            ['web-search', '{"query":"Exa API","additionalQueries":["other"]}'],
+            {
+              EXA_API_KEY: "test-key",
+              EXA_API_BASE_URL: server.baseUrl,
+            },
+          )
+
+          const invalidPayload = expectJson<{
+            data: { results: ReadonlyArray<{ error?: { details?: { field?: string } } }> }
+          }>(invalid.stdout)
+
+          expect(deep.exitCode).toBe(0)
+          expect(server.requests[0]?.body).toMatchObject({
+            query: "Exa API",
+            type: "deep-reasoning",
+            outputSchema: { type: "object" },
+            contents: { highlights: true, maxAgeHours: 24 },
+          })
+          expect(invalid.exitCode).toBe(1)
+          expect(invalidPayload.data.results[0]?.error?.details?.field).toBe("additionalQueries")
+        }),
+    ),
+  )
+
+  it.effect("answer posts to /answer", () =>
+    withTestServer(
+      async (request, response, record) => {
+        const body = await readRequestBody(request)
+        record(body)
+        writeJson(response, 200, {
+          answer: "Paris",
+          citations: [{ title: "France", url: "https://example.com" }],
+        })
+      },
+      (server) =>
+        Effect.gen(function* () {
+          const result = yield* runCli(["answer", '{"query":"Capital of France","model":"exa"}'], {
+            EXA_API_KEY: "test-key",
+            EXA_API_BASE_URL: server.baseUrl,
+          })
+          const payload = expectJson<{
+            data: { results: ReadonlyArray<{ data: { answer: string } }> }
+          }>(result.stdout)
+
+          expect(result.exitCode).toBe(0)
+          expect(payload.data.results[0]?.data.answer).toBe("Paris")
+          expect(server.requests[0]?.path).toBe("/answer")
+          expect(server.requests[0]?.body).toMatchObject({
+            query: "Capital of France",
+            model: "exa",
+          })
+        }),
+    ),
+  )
+
+  it.effect("agent start, cancel, stop, and delete use Agent run endpoints", () =>
+    withTestServer(
+      async (request, response, record) => {
+        const body = await readRequestBody(request)
+        record(body)
+
+        if (request.method === "DELETE") {
+          writeJson(response, 200, { id: "agent_run_1", object: "agent_run.deleted", deleted: true })
+          return
+        }
+
+        writeJson(response, 200, {
+          id: "agent_run_1",
+          object: "agent_run",
+          status: request.url?.endsWith("/cancel") ? "cancelled" : "running",
+          stopReason: request.url?.endsWith("/cancel") ? "cancelled" : null,
+        })
+      },
+      (server) =>
+        Effect.gen(function* () {
+          const start = yield* runCli(
+            ['agent', 'start', '{"query":"Research Effect","effort":"max"}'],
+            {
+              EXA_API_KEY: "test-key",
+              EXA_API_BASE_URL: server.baseUrl,
+            },
+          )
+          const cancel = yield* runCli(['agent', 'cancel', '{"id":"agent_run_1"}'], {
+            EXA_API_KEY: "test-key",
+            EXA_API_BASE_URL: server.baseUrl,
+          })
+          const stop = yield* runCli(['agent', 'stop', '{"id":"agent_run_1"}'], {
+            EXA_API_KEY: "test-key",
+            EXA_API_BASE_URL: server.baseUrl,
+          })
+          const remove = yield* runCli(['agent', 'delete', '{"id":"agent_run_1"}'], {
+            EXA_API_KEY: "test-key",
+            EXA_API_BASE_URL: server.baseUrl,
+          })
+
+          expect(start.exitCode).toBe(0)
+          expect(cancel.exitCode).toBe(0)
+          expect(stop.exitCode).toBe(0)
+          expect(remove.exitCode).toBe(0)
+          expect(server.requests[0]?.method).toBe("POST")
+          expect(server.requests[0]?.path).toBe("/agent/runs")
+          expect(server.requests[0]?.headers["exa-beta"]).toBe("agent-max-effort-2026-07-27")
+          expect(server.requests[0]?.body).toMatchObject({ query: "Research Effect", effort: "max" })
+          expect(server.requests[1]?.method).toBe("POST")
+          expect(server.requests[1]?.path).toBe("/agent/runs/agent_run_1/cancel")
+          expect(server.requests[2]?.path).toBe("/agent/runs/agent_run_1/stop")
+          expect(server.requests[2]?.headers["exa-beta"]).toBe("agent-max-effort-2026-07-27")
+          expect(server.requests[3]?.method).toBe("DELETE")
+          expect(server.requests[3]?.path).toBe("/agent/runs/agent_run_1")
+        }),
+    ),
+  )
+
+  it.effect("deep-research start rejects retired model field", () =>
+    Effect.gen(function* () {
+      const result = yield* runCli(
+        ["deep-research", "start", '{"instructions":"Research Effect","model":"exa-research"}'],
+        {
+          EXA_API_KEY: "test-key",
+        },
+      )
+      const payload = expectJson<{
+        error: { type: string; details?: { field?: string } }
+      }>(result.stderr)
+
+      expect(result.exitCode).toBe(1)
+      expect(payload.error.type).toBe("CommandInputError")
+      expect(payload.error.details?.field).toBe("model")
     }),
   )
 
@@ -924,6 +1161,25 @@ describe("toErrorDetails", () => {
         status: 422,
         body: { errors: ["invalid"] },
         retryable: false,
+      })
+    }),
+  )
+
+  it.effect("formats AgentWaitTimeoutError", () =>
+    Effect.gen(function* () {
+      const error = new AgentWaitTimeoutError({
+        runId: "agent_run_1",
+        timeoutMs: 1000,
+        lastStatus: "running",
+        message: "Timed out waiting for agent run agent_run_1",
+      })
+      const details = toErrorDetails(error)
+      expect(details.type).toBe("AgentWaitTimeoutError")
+      expect(details.details).toMatchObject({
+        run_id: "agent_run_1",
+        timeout_ms: 1000,
+        last_status: "running",
+        retryable: true,
       })
     }),
   )

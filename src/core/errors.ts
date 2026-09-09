@@ -81,6 +81,16 @@ export class ResearchWaitTimeoutError extends Schema.TaggedError<ResearchWaitTim
   },
 ) {}
 
+export class AgentWaitTimeoutError extends Schema.TaggedError<AgentWaitTimeoutError>()(
+  "AgentWaitTimeoutError",
+  {
+    runId: Schema.String,
+    timeoutMs: Schema.Number,
+    lastStatus: Schema.NullishOr(Schema.String),
+    message: Schema.String,
+  },
+) {}
+
 export type AppError =
   | ConfigurationError
   | MissingApiKeyError
@@ -91,3 +101,4 @@ export type AppError =
   | ApiDecodeError
   | ArtifactWriteError
   | ResearchWaitTimeoutError
+  | AgentWaitTimeoutError

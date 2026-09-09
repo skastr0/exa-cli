@@ -182,6 +182,19 @@ export const toErrorDetails = (error: unknown): ErrorEnvelope["error"] => {
           },
         }
       }
+      case "AgentWaitTimeoutError": {
+        return {
+          type: error._tag,
+          message: error.message,
+          details: {
+            run_id: error.runId as string,
+            timeout_ms: error.timeoutMs as number,
+            last_status: error.lastStatus,
+            hint: "Inspect the agent run later or rerun wait with a larger timeoutMs.",
+            retryable: true,
+          },
+        }
+      }
     }
   }
 
