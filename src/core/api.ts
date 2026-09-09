@@ -18,13 +18,14 @@ export interface AuthStatus {
   readonly error?: string
 }
 
-type HttpMethod = "GET" | "POST"
+type HttpMethod = "GET" | "POST" | "DELETE"
 
 interface RequestSpec<A, I, R> {
   readonly method: HttpMethod
   readonly path: string
   readonly integration: string
   readonly body?: unknown
+  readonly headers?: Readonly<Record<string, string>>
   readonly responseSchema: Schema.Schema<A, I, R>
 }
 
@@ -39,7 +40,6 @@ const baseClient = Effect.gen(function* () {
     HttpClient.mapRequest((request) =>
       request.pipe(
         HttpClientRequest.prependUrl(config.apiBaseUrl),
-        HttpClientRequest.acceptJson,
         HttpClientRequest.setHeader("content-type", "application/json"),
         HttpClientRequest.setHeader("x-api-key", credential),
         HttpClientRequest.setHeader("user-agent", USER_AGENT),
@@ -48,13 +48,27 @@ const baseClient = Effect.gen(function* () {
   )
 })
 
-const buildRequest = (spec: Pick<RequestSpec<unknown, unknown, never>, "method" | "path" | "body" | "integration">) => {
+const buildRequest = (
+  spec: Pick<RequestSpec<unknown, unknown, never>, "method" | "path" | "body" | "integration" | "headers">,
+) => {
   const request =
     spec.method === "GET"
       ? HttpClientRequest.get(spec.path)
-      : HttpClientRequest.post(spec.path).pipe(HttpClientRequest.bodyUnsafeJson(spec.body ?? {}))
+      : spec.method === "DELETE"
+        ? HttpClientRequest.del(spec.path)
+        : spec.body === undefined
+          ? HttpClientRequest.post(spec.path)
+          : HttpClientRequest.post(spec.path).pipe(HttpClientRequest.bodyUnsafeJson(spec.body))
 
-  return request.pipe(HttpClientRequest.setHeader("x-exa-integration", spec.integration))
+  const headerEntries = Object.entries(spec.headers ?? {})
+  const hasAccept = headerEntries.some(([key]) => key.toLowerCase() === "accept")
+  const withIntegration = request.pipe(HttpClientRequest.setHeader("x-exa-integration", spec.integration))
+  const withAccept = hasAccept ? withIntegration : withIntegration.pipe(HttpClientRequest.acceptJson)
+
+  return headerEntries.reduce(
+    (current, [key, value]) => current.pipe(HttpClientRequest.setHeader(key, value)),
+    withAccept,
+  )
 }
 
 const parseResponseBody = (text: string) =>
